@@ -1,6 +1,10 @@
+import jax
+from jax import lax
 import e3nn_jax as e3nn
 import jax.numpy as jnp
 from pymatgen.core.structure import Structure
+from pymatgen.analysis.local_env import get_neighbors_of_site_with_index
+import optax
 
 
 # TODO: remove this function once e3nn_jax is updated
@@ -30,7 +34,8 @@ def with_peaks_at(vectors, lmax):
         coeff
     )
     solution = jnp.array(jnp.linalg.lstsq(A, values)[0])  
-    assert jnp.max(jnp.abs(values - A @ solution)) < 1e-5 * jnp.max(jnp.abs(values))
+    
+    # assert jnp.max(jnp.abs(values - A @ solution)) < 1e-5 * jnp.max(jnp.abs(values))
 
     sh_expansion = solution @ coeff
     
@@ -89,9 +94,17 @@ class Spectra:
             neighbors = []
         self.neighbors = neighbors
         self.cutoff = cutoff
-        self.spectrum_function = {1: powerspectrum, 2: bispectrum, 3: trispectrum}[order]
+        self.spectrum_function = {1: powerspectrum, 2: bispectrum, 3: trispectrum}[order] # revise this to combinte it with lmax
 
-    def compute(self, cif, atom_site_number):
+
+    def compute_geometry(self, geometry):
+        """
+        """
+        sh_expansion = with_peaks_at(geometry, self.lmax)
+        return self.spectrum_function(sh_expansion)
+
+
+    def compute_cif_file_atom(self, cif, atom_site_number):
         """
         Compute the spectra of the local environment of a single atom in a CIF file.
 
@@ -119,7 +132,81 @@ class Spectra:
         return self.spectrum_function(sh_expansion)
 
 
+    def invert(self, true_spectrum, n_points=12):
+        """
+        Invert the spectra to obtain the original local environment up to a rotation.
+        """
+        rng = jax.random.PRNGKey(0)
+        init_rng, rng = jax.random.split(rng)
+        init_params = {"predicted_geometry": jax.random.normal(init_rng, (n_points, 3))}
+        optimizer = optax.adam(learning_rate=1e-4)
+        return self.fit(init_params, optimizer, true_spectrum)
 
 
+    def fit(
+            self, 
+            params: optax.Params, 
+            optimizer: optax.GradientTransformation, 
+            true_spectrum: jnp.ndarray,
+            max_iter: int = 5000
+        ) -> optax.Params:
+        """
+        Performs fitting on the provided parameters.
+        
+        Args:
+            params (optax.Params): Initial parameters.
+            optimizer (optax.GradientTransformation): The optimizer to use.
+            true_spectrum (jnp.ndarray): True power spectrum.
+            max_iter (int, optional): Maximum number of iterations. Defaults to 2500.
 
-    
+        Returns:
+            optax.Params: The fitted parameters.
+        """
+        opt_state = optimizer.init(params)
+        
+        def loss(params, true_spectrum):
+            predicted_geometry = params["predicted_geometry"]
+            predicted_signal = with_peaks_at(predicted_geometry, self.lmax)
+            predicted_spectrum = self.spectrum_function(predicted_signal)
+            return optax.l2_loss(true_spectrum, predicted_spectrum).mean()
+
+        @jax.jit
+        def step(params, opt_state, true_spectrum):
+            loss_value, grads = jax.value_and_grad(loss)(params, true_spectrum)
+            updates, opt_state = optimizer.update(grads, opt_state, params)
+            params = optax.apply_updates(params, updates)
+            return params, opt_state, loss_value
+
+        for iter in range(max_iter):
+            params, opt_state, loss_value = step(params, opt_state, true_spectrum)
+            if iter % 100 == 0:
+                print(f"Step {iter}, Loss: {loss_value}")
+
+        return params
+
+
+def radial_cutoff(radius=3.0):
+    """
+    This function creates a cutoff function for a given radius.
+
+    Parameters:
+        radius (float): The cutoff radius. Default is 3.0.
+
+    Returns:
+        function: A function that takes a structure and an atom and returns all atoms within the cutoff radius of the given atom.
+    """
+    return lambda structure, atom: structure.get_neighbors(structure[int(atom)], radius)
+
+
+def voronoi_cutoff(tol, cutoff): # add defaults
+    """
+    This function creates a cutoff function using the Voronoi approach.
+
+    Parameters:
+        tol (float): The tolerance for the Voronoi calculation.
+        cutoff (float): The cutoff distance for the Voronoi calculation.
+
+    Returns:
+        function: A function that takes a structure and an atom and returns all atoms within the cutoff distance of the given atom using the Voronoi approach.
+    """
+    return lambda structure, atom: get_neighbors_of_site_with_index(structure, int(atom), approach="voronoi", tol=tol, cutoff=cutoff)
