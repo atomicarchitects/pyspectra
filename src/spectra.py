@@ -7,8 +7,12 @@ from pymatgen.analysis.local_env import get_neighbors_of_site_with_index
 import optax
 
 
+def sum_of_diracs(vectors, lmax):
+    return e3nn.sum(e3nn.s2_dirac(vectors, lmax, p_val=1, p_arg=-1), axis=0)
+
+
 # TODO: remove this function once e3nn_jax is updated
-def with_peaks_at(vectors, lmax):
+def with_peaks_at(vectors, lmax, use_sum_of_diracs=True):
     """
     Compute a spherical harmonics expansion given Dirac delta functions defined on the sphere.
 
@@ -19,6 +23,9 @@ def with_peaks_at(vectors, lmax):
     Returns:
         e3nn.IrrepsArray: An array representing the weighted sum of the spherical harmonics expansion.
     """
+    if use_sum_of_diracs:
+        return sum_of_diracs(vectors, lmax)
+
     values = jnp.linalg.norm(vectors, axis=1)
 
     mask = values != 0
@@ -35,7 +42,7 @@ def with_peaks_at(vectors, lmax):
     )
     solution = jnp.array(jnp.linalg.lstsq(A, values)[0])  
     
-    # assert jnp.max(jnp.abs(values - A @ solution)) < 1e-5 * jnp.max(jnp.abs(values))
+    # assert jnp.max(jnp.abs(values - A @ solution)) < 1e-5 * jnp.max(jnp.abs(values)) # checkify
 
     sh_expansion = solution @ coeff
     
@@ -138,8 +145,16 @@ class Spectra:
         """
         rng = jax.random.PRNGKey(0)
         init_rng, rng = jax.random.split(rng)
-        init_params = {"predicted_geometry": jax.random.normal(init_rng, (n_points, 3))}
-        optimizer = optax.adam(learning_rate=1e-4)
+        init_geometry = jnp.array([
+            [1, 0, 0],
+            [-0.5, jnp.sqrt(3)/2, 0],
+            [-0.5, -jnp.sqrt(3)/2, 0]
+        ])
+        init_geometry += 0.5 * jax.random.normal(init_rng, (init_geometry.shape[0], 3))
+        # init_geometry /= jnp.linalg.norm(init_geometry, axis=1, keepdims=True)
+        init_params = {"predicted_geometry": init_geometry}
+        # init_params = {"predicted_geometry": jnp.zeros((n_points, 3))}
+        optimizer = optax.adam(learning_rate=1e-2)
         return self.fit(init_params, optimizer, true_spectrum)
 
 
@@ -148,7 +163,7 @@ class Spectra:
             params: optax.Params, 
             optimizer: optax.GradientTransformation, 
             true_spectrum: jnp.ndarray,
-            max_iter: int = 5000
+            max_iter: int = 1000
         ) -> optax.Params:
         """
         Performs fitting on the provided parameters.
@@ -166,6 +181,7 @@ class Spectra:
         
         def loss(params, true_spectrum):
             predicted_geometry = params["predicted_geometry"]
+            # predicted_geometry /= jnp.linalg.norm(predicted_geometry, axis=1, keepdims=True)
             predicted_signal = with_peaks_at(predicted_geometry, self.lmax)
             predicted_spectrum = self.spectrum_function(predicted_signal)
             return optax.l2_loss(true_spectrum, predicted_spectrum).mean()
@@ -173,16 +189,23 @@ class Spectra:
         @jax.jit
         def step(params, opt_state, true_spectrum):
             loss_value, grads = jax.value_and_grad(loss)(params, true_spectrum)
+            grad_norms = jnp.linalg.norm(grads["predicted_geometry"], axis=1)
+            # jax.debug.print("grad norms: {x}", x=jnp.linalg.norm(grads["predicted_geometry"], axis=1))
             updates, opt_state = optimizer.update(grads, opt_state, params)
             params = optax.apply_updates(params, updates)
-            return params, opt_state, loss_value
+            # jax.debug.print("point norms: {x}", x=jnp.linalg.norm(params["predicted_geometry"], axis=1))
+            return params, opt_state, loss_value, grad_norms
 
+        all_losses = []
+        all_grad_norms = []
         for iter in range(max_iter):
-            params, opt_state, loss_value = step(params, opt_state, true_spectrum)
+            params, opt_state, loss_value, grad_norms = step(params, opt_state, true_spectrum)
             if iter % 100 == 0:
                 print(f"Step {iter}, Loss: {loss_value}")
+            all_losses.append(loss_value)
+            all_grad_norms.append(grad_norms)
 
-        return params
+        return params, all_losses, all_grad_norms
 
 
 def radial_cutoff(radius=3.0):
@@ -210,3 +233,21 @@ def voronoi_cutoff(tol, cutoff): # add defaults
         function: A function that takes a structure and an atom and returns all atoms within the cutoff distance of the given atom using the Voronoi approach.
     """
     return lambda structure, atom: get_neighbors_of_site_with_index(structure, int(atom), approach="voronoi", tol=tol, cutoff=cutoff)
+
+
+def min_dist_cutoff(tol, cutoff):
+    """
+    This function creates a cutoff function using the minimum distance approach.
+
+    Parameters:
+        tol (float): The tolerance for the minimum distance calculation.
+        cutoff (float): The cutoff distance for the minimum distance calculation.
+
+    Returns:
+        function: A function that takes a structure and an atom and returns all atoms within the cutoff distance of the given atom using the minimum distance approach.
+    """
+    return lambda structure, atom: get_neighbors_of_site_with_index(structure, int(atom), approach="min_dist", tol=tol, cutoff=cutoff)
+
+
+
+
