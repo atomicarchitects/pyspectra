@@ -8,7 +8,7 @@ import optax
 
 
 def sum_of_diracs(vectors, lmax):
-    return e3nn.sum(e3nn.s2_dirac(vectors, lmax, p_val=1, p_arg=-1), axis=0)
+    return e3nn.mean(e3nn.s2_dirac(vectors, lmax, p_val=1, p_arg=-1), axis=0)
 
 
 # TODO: remove this function once e3nn_jax is updated
@@ -145,15 +145,9 @@ class Spectra:
         """
         rng = jax.random.PRNGKey(0)
         init_rng, rng = jax.random.split(rng)
-        init_geometry = jnp.array([
-            [1, 0, 0],
-            [-0.5, jnp.sqrt(3)/2, 0],
-            [-0.5, -jnp.sqrt(3)/2, 0]
-        ])
-        init_geometry += 0.5 * jax.random.normal(init_rng, (init_geometry.shape[0], 3))
-        # init_geometry /= jnp.linalg.norm(init_geometry, axis=1, keepdims=True)
+        init_geometry = jax.random.normal(init_rng, (n_points, 3))
+        init_geometry /= jnp.linalg.norm(init_geometry, axis=1, keepdims=True)
         init_params = {"predicted_geometry": init_geometry}
-        # init_params = {"predicted_geometry": jnp.zeros((n_points, 3))}
         optimizer = optax.adam(learning_rate=1e-2)
         return self.fit(init_params, optimizer, true_spectrum)
 
@@ -179,16 +173,16 @@ class Spectra:
         """
         opt_state = optimizer.init(params)
         
-        def loss(params, true_spectrum):
+        def loss(params):
             predicted_geometry = params["predicted_geometry"]
-            # predicted_geometry /= jnp.linalg.norm(predicted_geometry, axis=1, keepdims=True)
+            predicted_geometry /= jnp.linalg.norm(predicted_geometry, axis=1, keepdims=True)
             predicted_signal = with_peaks_at(predicted_geometry, self.lmax)
             predicted_spectrum = self.spectrum_function(predicted_signal)
             return optax.l2_loss(true_spectrum, predicted_spectrum).mean()
 
         @jax.jit
-        def step(params, opt_state, true_spectrum):
-            loss_value, grads = jax.value_and_grad(loss)(params, true_spectrum)
+        def step(params, opt_state):
+            loss_value, grads = jax.value_and_grad(loss)(params)
             grad_norms = jnp.linalg.norm(grads["predicted_geometry"], axis=1)
             # jax.debug.print("grad norms: {x}", x=jnp.linalg.norm(grads["predicted_geometry"], axis=1))
             updates, opt_state = optimizer.update(grads, opt_state, params)
@@ -196,16 +190,22 @@ class Spectra:
             # jax.debug.print("point norms: {x}", x=jnp.linalg.norm(params["predicted_geometry"], axis=1))
             return params, opt_state, loss_value, grad_norms
 
+        all_steps = []
+        all_params = []
         all_losses = []
         all_grad_norms = []
         for iter in range(max_iter):
-            params, opt_state, loss_value, grad_norms = step(params, opt_state, true_spectrum)
+            params, opt_state, loss_value, grad_norms = step(params, opt_state)
             if iter % 100 == 0:
                 print(f"Step {iter}, Loss: {loss_value}")
-            all_losses.append(loss_value)
-            all_grad_norms.append(grad_norms)
+            
+            if iter % 10 == 0:
+                all_steps.append(iter)
+                all_params.append(params)
+                all_losses.append(loss_value)
+                all_grad_norms.append(grad_norms)
 
-        return params, all_losses, all_grad_norms
+        return all_steps, all_params, all_losses, all_grad_norms
 
 
 def radial_cutoff(radius=3.0):
