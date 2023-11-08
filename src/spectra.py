@@ -5,14 +5,15 @@ import jax.numpy as jnp
 from pymatgen.core.structure import Structure
 from pymatgen.analysis.local_env import get_neighbors_of_site_with_index
 import optax
+import chex
 
 
-def sum_of_diracs(vectors, lmax):
+def sum_of_diracs(vectors: chex.Array, lmax: int):
     return e3nn.mean(e3nn.s2_dirac(vectors, lmax, p_val=1, p_arg=-1), axis=0)
 
 
 # TODO: remove this function once e3nn_jax is updated
-def with_peaks_at(vectors, lmax, use_sum_of_diracs=True):
+def with_peaks_at(vectors: chex.Array, lmax: int, use_sum_of_diracs: bool = False):
     """
     Compute a spherical harmonics expansion given Dirac delta functions defined on the sphere.
 
@@ -28,7 +29,7 @@ def with_peaks_at(vectors, lmax, use_sum_of_diracs=True):
 
     values = jnp.linalg.norm(vectors, axis=1)
 
-    mask = values != 0
+    mask = (values != 0)
     vectors = jnp.where(mask[:, None], vectors, 0)
     values = jnp.where(mask, values, 0)
  
@@ -106,6 +107,7 @@ class Spectra:
 
     def compute_geometry(self, geometry):
         """
+        TODO: this is a really bad name, it computes the spectrum not the geometry
         """
         sh_expansion = with_peaks_at(geometry, self.lmax)
         return self.spectrum_function(sh_expansion)
@@ -175,7 +177,6 @@ class Spectra:
         
         def loss(params):
             predicted_geometry = params["predicted_geometry"]
-            predicted_geometry /= jnp.linalg.norm(predicted_geometry, axis=1, keepdims=True)
             predicted_signal = with_peaks_at(predicted_geometry, self.lmax)
             predicted_spectrum = self.spectrum_function(predicted_signal)
             return optax.l2_loss(true_spectrum, predicted_spectrum).mean()
@@ -184,10 +185,10 @@ class Spectra:
         def step(params, opt_state):
             loss_value, grads = jax.value_and_grad(loss)(params)
             grad_norms = jnp.linalg.norm(grads["predicted_geometry"], axis=1)
-            # jax.debug.print("grad norms: {x}", x=jnp.linalg.norm(grads["predicted_geometry"], axis=1))
             updates, opt_state = optimizer.update(grads, opt_state, params)
             params = optax.apply_updates(params, updates)
-            # jax.debug.print("point norms: {x}", x=jnp.linalg.norm(params["predicted_geometry"], axis=1))
+            # Project the geometry onto the unit sphere.
+            params["predicted_geometry"] /= jnp.linalg.norm(params["predicted_geometry"], axis=1, keepdims=True)
             return params, opt_state, loss_value, grad_norms
 
         all_steps = []
