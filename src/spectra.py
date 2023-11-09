@@ -15,7 +15,7 @@ def sum_of_diracs(vectors: chex.Array, lmax: int) -> e3nn.IrrepsArray:
 
 
 # TODO: remove this function once e3nn_jax is updated
-def with_peaks_at(vectors: chex.Array, lmax: int, use_sum_of_diracs: bool = False) -> e3nn.IrrepsArray:
+def with_peaks_at(vectors: chex.Array, lmax: int, use_sum_of_diracs: bool = True) -> e3nn.IrrepsArray:
     """
     Compute a spherical harmonics expansion given Dirac delta functions defined on the sphere.
 
@@ -28,7 +28,7 @@ def with_peaks_at(vectors: chex.Array, lmax: int, use_sum_of_diracs: bool = Fals
     """
     if use_sum_of_diracs:
         return sum_of_diracs(vectors, lmax)
-    
+
     values = jnp.linalg.norm(vectors, axis=1)
 
     mask = (values != 0)
