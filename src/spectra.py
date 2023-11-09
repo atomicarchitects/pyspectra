@@ -8,12 +8,14 @@ import optax
 import chex
 
 
-def sum_of_diracs(vectors: chex.Array, lmax: int):
-    return e3nn.mean(e3nn.s2_dirac(vectors, lmax, p_val=1, p_arg=-1), axis=0)
+def sum_of_diracs(vectors: chex.Array, lmax: int) -> e3nn.IrrepsArray:
+    """Returns the norm-weighted sum of Dirac delta functions defined on the sphere."""
+    values = jnp.linalg.norm(vectors, axis=1)
+    return e3nn.sum(e3nn.s2_dirac(vectors, lmax, p_val=1, p_arg=-1) * values[:, None], axis=0)
 
 
 # TODO: remove this function once e3nn_jax is updated
-def with_peaks_at(vectors: chex.Array, lmax: int, use_sum_of_diracs: bool = False):
+def with_peaks_at(vectors: chex.Array, lmax: int, use_sum_of_diracs: bool = False) -> e3nn.IrrepsArray:
     """
     Compute a spherical harmonics expansion given Dirac delta functions defined on the sphere.
 
@@ -26,22 +28,21 @@ def with_peaks_at(vectors: chex.Array, lmax: int, use_sum_of_diracs: bool = Fals
     """
     if use_sum_of_diracs:
         return sum_of_diracs(vectors, lmax)
-
+    
     values = jnp.linalg.norm(vectors, axis=1)
 
     mask = (values != 0)
     vectors = jnp.where(mask[:, None], vectors, 0)
     values = jnp.where(mask, values, 0)
  
-    coeff_list = [e3nn.spherical_harmonics(i, e3nn.IrrepsArray("1o", vectors), normalize=True).array for i in range(lmax + 1)]
-    coeff = jnp.concatenate(coeff_list, axis=1)
+    coeff = e3nn.spherical_harmonics(e3nn.s2_irreps(lmax), e3nn.IrrepsArray("1o", vectors), normalize=True).array
     
     A = jnp.einsum(
         "ai,bi->ab",
         coeff,
         coeff
     )
-    solution = jnp.array(jnp.linalg.lstsq(A, values)[0])  
+    solution = jnp.linalg.lstsq(A, values)[0]
     
     # assert jnp.max(jnp.abs(values - A @ solution)) < 1e-5 * jnp.max(jnp.abs(values)) # checkify
 
@@ -159,7 +160,7 @@ class Spectra:
             params: optax.Params, 
             optimizer: optax.GradientTransformation, 
             true_spectrum: jnp.ndarray,
-            max_iter: int = 1000
+            max_iter: int = 2000
         ) -> optax.Params:
         """
         Performs fitting on the provided parameters.
@@ -179,7 +180,7 @@ class Spectra:
             predicted_geometry = params["predicted_geometry"]
             predicted_signal = with_peaks_at(predicted_geometry, self.lmax)
             predicted_spectrum = self.spectrum_function(predicted_signal)
-            return optax.l2_loss(true_spectrum, predicted_spectrum).mean()
+            return jnp.abs(true_spectrum - predicted_spectrum).mean()
 
         @jax.jit
         def step(params, opt_state):
@@ -187,8 +188,6 @@ class Spectra:
             grad_norms = jnp.linalg.norm(grads["predicted_geometry"], axis=1)
             updates, opt_state = optimizer.update(grads, opt_state, params)
             params = optax.apply_updates(params, updates)
-            # Project the geometry onto the unit sphere.
-            params["predicted_geometry"] /= jnp.linalg.norm(params["predicted_geometry"], axis=1, keepdims=True)
             return params, opt_state, loss_value, grad_norms
 
         all_steps = []
