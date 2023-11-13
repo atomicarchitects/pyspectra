@@ -6,6 +6,8 @@ from pymatgen.core.structure import Structure
 from pymatgen.analysis.local_env import get_neighbors_of_site_with_index
 import optax
 import chex
+import plotly
+import plotly.graph_objects as go
 
 
 def sum_of_diracs(vectors: chex.Array, lmax: int):
@@ -13,7 +15,7 @@ def sum_of_diracs(vectors: chex.Array, lmax: int):
 
 
 # TODO: remove this function once e3nn_jax is updated
-def with_peaks_at(vectors: chex.Array, lmax: int, use_sum_of_diracs: bool = False):
+def with_peaks_at(vectors: chex.Array, lmax: int, use_sum_of_diracs: bool = True):
     """
     Compute a spherical harmonics expansion given Dirac delta functions defined on the sphere.
 
@@ -177,9 +179,11 @@ class Spectra:
         
         def loss(params):
             predicted_geometry = params["predicted_geometry"]
+            predicted_geometry /= jnp.linalg.norm(predicted_geometry, axis=1, keepdims=True)
             predicted_signal = with_peaks_at(predicted_geometry, self.lmax)
             predicted_spectrum = self.spectrum_function(predicted_signal)
             return optax.l2_loss(true_spectrum, predicted_spectrum).mean()
+            # return jnp.abs(true_spectrum - predicted_spectrum).mean()
 
         @jax.jit
         def step(params, opt_state):
@@ -187,8 +191,6 @@ class Spectra:
             grad_norms = jnp.linalg.norm(grads["predicted_geometry"], axis=1)
             updates, opt_state = optimizer.update(grads, opt_state, params)
             params = optax.apply_updates(params, updates)
-            # Project the geometry onto the unit sphere.
-            params["predicted_geometry"] /= jnp.linalg.norm(params["predicted_geometry"], axis=1, keepdims=True)
             return params, opt_state, loss_value, grad_norms
 
         all_steps = []
@@ -251,4 +253,35 @@ def min_dist_cutoff(tol, cutoff):
 
 
 
+def visualize(geometry):
+    sig = with_peaks_at(geometry, lmax=4)
 
+    layout = go.Layout(
+        scene=dict(
+            xaxis=dict(title='', showticklabels=False, showgrid=False, zeroline=False, backgroundcolor='rgba(255,255,255,255)', range=[-2.5, 2.5]),
+            yaxis=dict(title='', showticklabels=False, showgrid=False, zeroline=False, backgroundcolor='rgba(255,255,255,255)', range=[-2.5, 2.5]),
+            zaxis=dict(title='', showticklabels=False, showgrid=False, zeroline=False, backgroundcolor='rgba(255,255,255,255)', range=[-2.5, 2.5]),
+            bgcolor='rgba(255,255,255,255)',
+            aspectmode='cube',
+            camera=dict(
+                eye=dict(x=0.5, y=0.5, z=0.5)
+            )
+        ),
+        plot_bgcolor='rgba(255,255,255,255)',
+        paper_bgcolor='rgba(255,255,255,255)',
+        margin=dict(l=0, r=0, t=0, b=0),
+        legend=dict(
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=0
+        )
+    )
+
+    spherical_harmonics_trace = go.Surface(e3nn.to_s2grid(sig, 100, 99, quadrature="soft").plotly_surface(radius=1., normalize_radius_by_max_amplitude=True, scale_radius_by_amplitude=True), name="Signal", showlegend=True)
+    atoms_trace = go.Scatter3d(x=geometry[:, 0], y=geometry[:, 1], z=geometry[:, 2], mode='markers', marker=dict(size=10, color='black'), showlegend=True, name="Points")
+    fig = go.Figure()
+    fig.add_trace(spherical_harmonics_trace)
+    fig.add_trace(atoms_trace)
+    fig.update_layout(layout)
+    return fig
