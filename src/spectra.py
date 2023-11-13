@@ -6,6 +6,11 @@ from pymatgen.core.structure import Structure
 from pymatgen.analysis.local_env import get_neighbors_of_site_with_index
 import optax
 import chex
+<<<<<<< HEAD
+=======
+import plotly
+import plotly.graph_objects as go
+>>>>>>> a176e8a835a7ba0e9e4a16423584c4e0e1b2e498
 
 
 def sum_of_diracs(vectors: chex.Array, lmax: int) -> e3nn.IrrepsArray:
@@ -250,4 +255,35 @@ def min_dist_cutoff(tol, cutoff):
 
 
 
+def visualize(geometry):
+    sig = with_peaks_at(geometry, lmax=4)
 
+    layout = go.Layout(
+        scene=dict(
+            xaxis=dict(title='', showticklabels=False, showgrid=False, zeroline=False, backgroundcolor='rgba(255,255,255,255)', range=[-2.5, 2.5]),
+            yaxis=dict(title='', showticklabels=False, showgrid=False, zeroline=False, backgroundcolor='rgba(255,255,255,255)', range=[-2.5, 2.5]),
+            zaxis=dict(title='', showticklabels=False, showgrid=False, zeroline=False, backgroundcolor='rgba(255,255,255,255)', range=[-2.5, 2.5]),
+            bgcolor='rgba(255,255,255,255)',
+            aspectmode='cube',
+            camera=dict(
+                eye=dict(x=0.5, y=0.5, z=0.5)
+            )
+        ),
+        plot_bgcolor='rgba(255,255,255,255)',
+        paper_bgcolor='rgba(255,255,255,255)',
+        margin=dict(l=0, r=0, t=0, b=0),
+        legend=dict(
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=0
+        )
+    )
+
+    spherical_harmonics_trace = go.Surface(e3nn.to_s2grid(sig, 100, 99, quadrature="soft").plotly_surface(radius=1., normalize_radius_by_max_amplitude=True, scale_radius_by_amplitude=True), name="Signal", showlegend=True)
+    atoms_trace = go.Scatter3d(x=geometry[:, 0], y=geometry[:, 1], z=geometry[:, 2], mode='markers', marker=dict(size=10, color='black'), showlegend=True, name="Points")
+    fig = go.Figure()
+    fig.add_trace(spherical_harmonics_trace)
+    fig.add_trace(atoms_trace)
+    fig.update_layout(layout)
+    return fig
