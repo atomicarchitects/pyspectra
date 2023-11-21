@@ -4,6 +4,7 @@ import e3nn_jax as e3nn
 import jax.numpy as jnp
 from pymatgen.core.structure import Structure
 from pymatgen.analysis.local_env import get_neighbors_of_site_with_index
+from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 import optax
 import chex
 import plotly
@@ -70,7 +71,21 @@ def trispectrum(x: e3nn.IrrepsArray) -> e3nn.IrrepsArray:
 
 
 class Spectra:
+    """
+    The Spectra class is used to compute the power spectrum, bispectrum, and trispectrum of an array of irreducible representations.
+    It also provides methods to set the maximum degree of spherical harmonics, the order of the spectrum, and the neighbors to consider.
+    """
+    
     def __init__(self, lmax: int, order: int = 2, neighbors: None = None, cutoff: callable = None):
+        """
+        Initializes the Spectra class.
+
+        Parameters:
+            lmax (int): The maximum degree of spherical harmonics.
+            order (int): The order of the spectrum. Default is 2.
+            neighbors (list): The neighbors to consider. Default is None.
+            cutoff (callable): The cutoff function to use. Default is None.
+        """
         self.lmax = lmax
         self.order = order  # 1 = power spectrum, 2 = bispectrum, 3 = trispectrum
         if neighbors is None:
@@ -78,42 +93,149 @@ class Spectra:
         self.neighbors = neighbors
         self.cutoff = cutoff
         self.spectrum_function = {1: powerspectrum, 2: bispectrum, 3: trispectrum}[order]  # revise this to combine it with lmax
+        self.structure = None
 
 
-    def compute_spectra(self, geometry):
+    def set_lmax(self, lmax):
         """
-        Computes the spectra of a given geometry.
-        """
-        sh_expansion = sum_of_diracs(geometry, self.lmax)
-        return self.spectrum_function(sh_expansion)
-
-
-    def compute_cif_file_atom(self, cif, atom_site_number):  # TODO potentially add functionality to load in a CIF file, so that it does not need to be loaded in every time
-        """
-        Computes the spectra of the local environment of a single atom in a CIF file.
+        Sets the maximum degree of spherical harmonics.
 
         Parameters:
-            cif (str): The path to the CIF file.
+            lmax (int): The maximum degree of spherical harmonics.
+
+        Returns:
+            None
+        """
+        self.lmax = lmax
+        self.spectrum_function = {1: powerspectrum, 2: bispectrum, 3: trispectrum}[self.order]
+
+
+    def set_order(self, order):
+        """
+        Sets the order of the spectrum.
+
+        Parameters:
+            order (int): The order of the spectrum.
+
+        Returns:
+            None
+        """
+        self.order = order
+        self.spectrum_function = {1: powerspectrum, 2: bispectrum, 3: trispectrum}[self.order]
+
+
+    def set_neighbors(self, neighbors):
+        """
+        Sets the neighbors to consider.
+
+        Parameters:
+            neighbors (list): The neighbors to consider.
+
+        Returns:
+            None
+        """
+        self.neighbors = neighbors
+
+
+    def set_cutoff(self, cutoff):
+        """
+        Sets the cutoff function.
+
+        Parameters:
+            cutoff (callable): The cutoff function.
+
+        Returns:
+            None
+        """
+        self.cutoff = cutoff
+
+
+    def load_cif(self, cif_file_path):
+        """
+        Loads a CIF file.
+
+        Parameters:
+            cif_file_path (str): The path to the CIF file to load.
+
+        Returns:
+            None
+        """
+        self.structure = Structure.from_file(cif_file_path)
+
+
+    def load_structure(self, structure):
+        """
+        Loads a structure.
+
+        Parameters:
+            structure (Structure): The structure to load.
+
+        Returns:
+            None
+        """
+        self.structure = structure
+
+
+    def compute_atom_spectra(self, atom_site_number):
+        """
+        Computes the spectra of the local environment of a single atom.
+
+        Parameters:
             atom_site_number (int): The atom site number.
 
         Returns:
             dict: A dictionary mapping atom site number to the spectrum of that atom's local environment.
         """
-        
-        # load the CIF file
-        structure = Structure.from_file(cif)
-
-        # compute the local environment of the atom
-        local_env = self.cutoff(structure, atom_site_number)
+        local_env = self.cutoff(self.structure, atom_site_number)
         if self.neighbors:
             local_env = [atom for atom in local_env if atom.specie.symbol in self.neighbors]
         if not local_env:
             return None
-        local_env = jnp.stack([atom.coords for atom in local_env], axis=0) - structure[atom_site_number].coords.reshape(1, 3)
-
-        # compute the spectra of the local environment
+        local_env = jnp.stack([atom.coords for atom in local_env], axis=0) - self.structure[atom_site_number].coords.reshape(1, 3)
         sh_expansion = sum_of_diracs(local_env, self.lmax)
         return self.spectrum_function(sh_expansion)
+    
+
+    def compute_element_spectra(self, element):
+        """
+        Computes the spectra of all atoms of a given element in a structure.
+
+        Parameters:
+            element (str): The element.
+
+        Returns:
+            dict: A dictionary mapping atom site number to the spectrum of that atom's local environment.
+        """
+        return {atom_site_number: self.compute_atom_spectra(atom_site_number) for atom_site_number, atom in enumerate(self.structure) if atom.specie.symbol == element}
+
+
+    def get_symmetry_unique_indices(self):
+        """
+        Returns the indices of the symmetry-unique atoms in a structure.
+
+        Returns:
+            set: A set of indices of the symmetry-unique atoms in the structure.
+        """
+        sga = SpacegroupAnalyzer(self.structure)
+        return set(sga.get_symmetry_dataset()['equivalent_atoms'])
+
+
+    def compute_structure_spectra(self, symmetry_unique_only=True):
+        """
+        Computes the spectra of all atoms in a structure.
+
+        Parameters:
+            symmetry_unique_only (bool): Whether to only compute the spectra for the symmetry-unique atoms in the structure.
+
+        Returns:
+            dict: A dictionary mapping atom site number to the spectrum of that atom's local environment.
+        """
+        if symmetry_unique_only:
+            symmetry_unique_indices = self.get_symmetry_unique_indices()
+            atom_site_numbers = [i for i in range(len(self.structure)) if i in symmetry_unique_indices]
+        else:
+            atom_site_numbers = range(len(self.structure))
+        return {atom_site_number: self.compute_atom_spectra(atom_site_number) for atom_site_number in atom_site_numbers}
 
 
     def invert(self, true_spectrum, n_points=12):
@@ -224,7 +346,6 @@ def min_dist_cutoff(delta=0.1, cutoff=10):
         function: A function that takes a structure and an atom and returns all atoms within the cutoff distance of the given atom using the minimum distance approach.
     """
     return lambda structure, atom: get_neighbors_of_site_with_index(structure, int(atom), approach="min_dist", delta=delta, cutoff=cutoff)
-
 
 
 def visualize(geometry):
