@@ -5,6 +5,15 @@ import jax.numpy as jnp
 from pymatgen.core.structure import Structure
 from pymatgen.analysis.local_env import get_neighbors_of_site_with_index
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+from pymatgen.analysis.chemenv.coordination_environments.chemenv_strategies import (
+    SimplestChemenvStrategy,
+)
+from pymatgen.analysis.chemenv.coordination_environments.coordination_geometry_finder import (
+    LocalGeometryFinder,
+)
+from pymatgen.analysis.chemenv.coordination_environments.structure_environments import (
+    LightStructureEnvironments,
+)
 import optax
 import chex
 import plotly
@@ -70,13 +79,110 @@ def trispectrum(x: e3nn.IrrepsArray) -> e3nn.IrrepsArray:
     return e3nn.IrrepsArray(rtp.irreps, jnp.einsum("i,j,k,l,ijklz->z", x.array, x.array, x.array, x.array, rtp.array)).array
 
 
+def radial_cutoff(radius=3.0):
+    """
+    This function creates a cutoff function for a given radius.
+
+    Parameters:
+        radius (float): The cutoff radius. Default is 3.0.
+
+    Returns:
+        function: A function that takes a structure and an atom and returns all atoms within the cutoff radius of the given atom.
+    """
+    return lambda structure, atom: structure.get_neighbors(structure[int(atom)], radius)
+
+
+def voronoi_cutoff(tol, cutoff):  # TODO: add defaults
+    """
+    This function creates a cutoff function using the Voronoi approach.
+
+    Parameters:
+        tol (float): The tolerance for the Voronoi calculation.
+        cutoff (float): The cutoff distance for the Voronoi calculation.
+
+    Returns:
+        function: A function that takes a structure and an atom and returns all atoms within the cutoff distance of the given atom using the Voronoi approach.
+    """
+    return lambda structure, atom: get_neighbors_of_site_with_index(structure, int(atom), approach="voronoi", tol=tol, cutoff=cutoff)
+
+
+def min_dist_cutoff(delta=0.1, cutoff=10):
+    """
+    This function creates a cutoff function using the minimum distance approach.
+
+    Parameters:
+        delta (float): Tolerance involved in neighbor finding.
+        cutoff (float): (Large) radius to find tentative neighbors.
+
+    Returns:
+        function: A function that takes a structure and an atom and returns all atoms within the cutoff distance of the given atom using the minimum distance approach.
+    """
+    return lambda structure, atom: get_neighbors_of_site_with_index(structure, int(atom), approach="min_dist", delta=delta, cutoff=cutoff)
+
+
+def chemenv_cutoff(structure, atom_site_number): 
+    """
+    This function creates a cutoff function using the ChemEnv approach.
+
+    Parameters:
+        structure (Structure): The structure for which the cutoff is to be calculated.
+        atom_site_number (int): The site number of the atom for which the cutoff is to be calculated.
+
+    Returns:
+        list: A list of atoms within the cutoff distance of the given atom using the ChemEnv approach.
+    """
+    lgf = LocalGeometryFinder()
+    lgf.setup_structure(structure)
+    se = lgf.compute_structure_environments(structure, only_indices=[atom_site_number])
+    strategy = SimplestChemenvStrategy()
+    lse = LightStructureEnvironments.from_structure_environments(
+        strategy=strategy, structure_environments=se
+    )
+    return [structure[neighbor['index']] for neighbor in lse.neighbors_sets[atom_site_number][0].neighb_sites_and_indices]
+
+
+def visualize(geometry):
+    sig = sum_of_diracs(geometry, lmax=4)
+
+    layout = go.Layout(
+        scene=dict(
+            xaxis=dict(title='', showticklabels=False, showgrid=False, zeroline=False, backgroundcolor='rgba(255,255,255,255)', range=[-2.5, 2.5]),
+            yaxis=dict(title='', showticklabels=False, showgrid=False, zeroline=False, backgroundcolor='rgba(255,255,255,255)', range=[-2.5, 2.5]),
+            zaxis=dict(title='', showticklabels=False, showgrid=False, zeroline=False, backgroundcolor='rgba(255,255,255,255)', range=[-2.5, 2.5]),
+            bgcolor='rgba(255,255,255,255)',
+            aspectmode='cube',
+            camera=dict(
+                eye=dict(x=0.5, y=0.5, z=0.5)
+            )
+        ),
+        plot_bgcolor='rgba(255,255,255,255)',
+        paper_bgcolor='rgba(255,255,255,255)',
+        margin=dict(l=0, r=0, t=0, b=0),
+        legend=dict(
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=0
+        )
+    )
+
+    spherical_harmonics_trace = go.Surface(e3nn.to_s2grid(sig, 100, 99, quadrature="soft").plotly_surface(radius=1., normalize_radius_by_max_amplitude=True, scale_radius_by_amplitude=True), name="Signal", showlegend=True)
+    atoms_trace = go.Scatter3d(x=geometry[:, 0], y=geometry[:, 1], z=geometry[:, 2], mode='markers', marker=dict(size=10, color='black'), showlegend=True, name="Points")
+    fig = go.Figure()
+    fig.add_trace(spherical_harmonics_trace)
+    fig.add_trace(atoms_trace)
+    fig.update_layout(layout)
+    return fig
+
+
+
 class Spectra:
     """
     The Spectra class is used to compute the power spectrum, bispectrum, and trispectrum of an array of irreducible representations.
     It also provides methods to set the maximum degree of spherical harmonics, the order of the spectrum, and the neighbors to consider.
     """
     
-    def __init__(self, lmax: int, order: int = 2, neighbors: None = None, cutoff: callable = None):
+    def __init__(self, lmax: int = 4, order: int = 2, neighbors: None = None, cutoff: callable = chemenv_cutoff):
         """
         Initializes the Spectra class.
 
@@ -305,78 +411,3 @@ class Spectra:
                 all_grad_norms.append(grad_norms)
 
         return all_steps, all_params, all_losses, all_grad_norms
-
-
-def radial_cutoff(radius=3.0):
-    """
-    This function creates a cutoff function for a given radius.
-
-    Parameters:
-        radius (float): The cutoff radius. Default is 3.0.
-
-    Returns:
-        function: A function that takes a structure and an atom and returns all atoms within the cutoff radius of the given atom.
-    """
-    return lambda structure, atom: structure.get_neighbors(structure[int(atom)], radius)
-
-
-def voronoi_cutoff(tol, cutoff):  # TODO: add defaults
-    """
-    This function creates a cutoff function using the Voronoi approach.
-
-    Parameters:
-        tol (float): The tolerance for the Voronoi calculation.
-        cutoff (float): The cutoff distance for the Voronoi calculation.
-
-    Returns:
-        function: A function that takes a structure and an atom and returns all atoms within the cutoff distance of the given atom using the Voronoi approach.
-    """
-    return lambda structure, atom: get_neighbors_of_site_with_index(structure, int(atom), approach="voronoi", tol=tol, cutoff=cutoff)
-
-
-def min_dist_cutoff(delta=0.1, cutoff=10):
-    """
-    This function creates a cutoff function using the minimum distance approach.
-
-    Parameters:
-        delta (float): Tolerance involved in neighbor finding.
-        cutoff (float): (Large) radius to find tentative neighbors.
-
-    Returns:
-        function: A function that takes a structure and an atom and returns all atoms within the cutoff distance of the given atom using the minimum distance approach.
-    """
-    return lambda structure, atom: get_neighbors_of_site_with_index(structure, int(atom), approach="min_dist", delta=delta, cutoff=cutoff)
-
-
-def visualize(geometry):
-    sig = sum_of_diracs(geometry, lmax=4)
-
-    layout = go.Layout(
-        scene=dict(
-            xaxis=dict(title='', showticklabels=False, showgrid=False, zeroline=False, backgroundcolor='rgba(255,255,255,255)', range=[-2.5, 2.5]),
-            yaxis=dict(title='', showticklabels=False, showgrid=False, zeroline=False, backgroundcolor='rgba(255,255,255,255)', range=[-2.5, 2.5]),
-            zaxis=dict(title='', showticklabels=False, showgrid=False, zeroline=False, backgroundcolor='rgba(255,255,255,255)', range=[-2.5, 2.5]),
-            bgcolor='rgba(255,255,255,255)',
-            aspectmode='cube',
-            camera=dict(
-                eye=dict(x=0.5, y=0.5, z=0.5)
-            )
-        ),
-        plot_bgcolor='rgba(255,255,255,255)',
-        paper_bgcolor='rgba(255,255,255,255)',
-        margin=dict(l=0, r=0, t=0, b=0),
-        legend=dict(
-            yanchor="top",
-            y=1,
-            xanchor="left",
-            x=0
-        )
-    )
-
-    spherical_harmonics_trace = go.Surface(e3nn.to_s2grid(sig, 100, 99, quadrature="soft").plotly_surface(radius=1., normalize_radius_by_max_amplitude=True, scale_radius_by_amplitude=True), name="Signal", showlegend=True)
-    atoms_trace = go.Scatter3d(x=geometry[:, 0], y=geometry[:, 1], z=geometry[:, 2], mode='markers', marker=dict(size=10, color='black'), showlegend=True, name="Points")
-    fig = go.Figure()
-    fig.add_trace(spherical_harmonics_trace)
-    fig.add_trace(atoms_trace)
-    fig.update_layout(layout)
-    return fig
