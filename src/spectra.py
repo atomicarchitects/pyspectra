@@ -147,9 +147,7 @@ def chemenv_cutoff(structure, atom_site_number):
     return [structure[neighbor['index']] for neighbor in lse.neighbors_sets[atom_site_number][0].neighb_sites_and_indices]
 
 
-def visualize(geometry):
-    sig = sum_of_diracs(geometry, lmax=4)
-
+def visualize_signal(signal):
     layout = go.Layout(
         scene=dict(
             xaxis=dict(
@@ -194,7 +192,7 @@ def visualize(geometry):
     )
 
     spherical_harmonics_trace = go.Surface(
-        e3nn.to_s2grid(sig, 100, 99, quadrature="soft").plotly_surface(
+        e3nn.to_s2grid(signal, 100, 99, quadrature="soft").plotly_surface(
             radius=1., 
             normalize_radius_by_max_amplitude=True, 
             scale_radius_by_amplitude=True
@@ -202,21 +200,28 @@ def visualize(geometry):
         name="Signal", 
         showlegend=True
     )
-    atoms_trace = go.Scatter3d(
-        x=geometry[:, 0], 
-        y=geometry[:, 1], 
-        z=geometry[:, 2], 
-        mode='markers', 
-        marker=dict(size=10, color='black'), 
-        showlegend=True, 
-        name="Points"
-    )
+
     fig = go.Figure()
     fig.add_trace(spherical_harmonics_trace)
-    fig.add_trace(atoms_trace)
     fig.update_layout(layout)
     return fig
 
+
+def visualize_geometry(geometry, show_points=False):
+    signal = sum_of_diracs(geometry, lmax=4)
+    fig = visualize_signal(signal)
+    if show_points:
+        atoms_trace = go.Scatter3d(
+            x=geometry[:, 0], 
+            y=geometry[:, 1], 
+            z=geometry[:, 2], 
+            mode='markers', 
+            marker=dict(size=10, color='black'), 
+            showlegend=True, 
+            name="Points"
+        )
+        fig.add_trace(atoms_trace)
+    return fig
 
 
 class Spectra:
