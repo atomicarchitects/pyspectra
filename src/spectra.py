@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from pymatgen.core.structure import Structure
 from pymatgen.analysis.local_env import get_neighbors_of_site_with_index
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+from pymatgen.io.cif import CifParser
 from pymatgen.analysis.chemenv.coordination_environments.chemenv_strategies import (
     SimplestChemenvStrategy,
 )
@@ -20,14 +21,19 @@ import plotly
 import plotly.graph_objects as go
 
 
-def sum_of_diracs(vectors: chex.Array, lmax: int, values: chex.Array = None) -> e3nn.IrrepsArray:
+def sum_of_diracs(
+    vectors: chex.Array, 
+    lmax: int, 
+    values: chex.Array = None
+) -> e3nn.IrrepsArray:
     """
     Given a set of vectors, computes the sum of Dirac delta functions.
 
     Parameters:
         vectors (chex.Array): Input array of vectors.
         lmax (int): Maximum degree of spherical harmonics.
-        values (chex.Array, optional): Values at each vector. If not provided, the norm of each vector is used.
+        values (chex.Array, optional): Values at each vector. 
+            If not provided, the norm of each vector is used.
 
     Returns:
         e3nn.IrrepsArray: The sum of Dirac delta functions.
@@ -81,7 +87,7 @@ def trispectrum(x: e3nn.IrrepsArray) -> e3nn.IrrepsArray:
 
 def radial_cutoff(radius=3.0):
     """
-    This function creates a cutoff function for a given radius.
+    Get all neighbors to a site within a sphere of radius r. Excludes the site itself.
 
     Parameters:
         radius (float): The cutoff radius. Default is 3.0.
@@ -92,32 +98,32 @@ def radial_cutoff(radius=3.0):
     return lambda structure, atom: structure.get_neighbors(structure[int(atom)], radius)
 
 
-def voronoi_cutoff(tol, cutoff):  # TODO: add defaults
+def voronoi_cutoff(tol=0, cutoff=13.0):
     """
-    This function creates a cutoff function using the Voronoi approach.
+    Uses a Voronoi algorithm to determine near neighbors for each site in a structure.
 
     Parameters:
-        tol (float): The tolerance for the Voronoi calculation.
-        cutoff (float): The cutoff distance for the Voronoi calculation.
+        tol (float): Tolerance parameter for near-neighbor finding. Faces that are smaller than tol fraction of the largest face are not included in the tessellation. Default is 0.
+        cutoff (float): Cutoff radius in Angstroms to look for near-neighbor atoms. Default is 13.0.
 
     Returns:
         function: A function that takes a structure and an atom and returns all atoms within the cutoff distance of the given atom using the Voronoi approach.
     """
-    return lambda structure, atom: get_neighbors_of_site_with_index(structure, int(atom), approach="voronoi", tol=tol, cutoff=cutoff)
+    return lambda structure, atom: get_neighbors_of_site_with_index(structure, int(atom), approach="voronoi", delta=tol, cutoff=cutoff)
 
 
-def min_dist_cutoff(delta=0.1, cutoff=10):
+def min_dist_cutoff(tol=0.1, cutoff=10.0):
     """
-    This function creates a cutoff function using the minimum distance approach.
+    Determine near-neighbor sites using the nearest neighbor(s) at distance, d_min, plus all neighbors within a distance (1 + tol) * d_min, where tol is a (relative) distance tolerance parameter.
 
     Parameters:
-        delta (float): Tolerance involved in neighbor finding.
-        cutoff (float): (Large) radius to find tentative neighbors.
+        delta (float): Tolerance parameter for neighbor identification. Default is 0.1.
+        cutoff (float): Cutoff radius in Angstrom to look for trial near-neighbor sites. Default is 10.0.
 
     Returns:
         function: A function that takes a structure and an atom and returns all atoms within the cutoff distance of the given atom using the minimum distance approach.
     """
-    return lambda structure, atom: get_neighbors_of_site_with_index(structure, int(atom), approach="min_dist", delta=delta, cutoff=cutoff)
+    return lambda structure, atom: get_neighbors_of_site_with_index(structure, int(atom), approach="min_dist", delta=tol, cutoff=cutoff)
 
 
 def chemenv_cutoff(structure, atom_site_number): 
@@ -146,9 +152,30 @@ def visualize(geometry):
 
     layout = go.Layout(
         scene=dict(
-            xaxis=dict(title='', showticklabels=False, showgrid=False, zeroline=False, backgroundcolor='rgba(255,255,255,255)', range=[-2.5, 2.5]),
-            yaxis=dict(title='', showticklabels=False, showgrid=False, zeroline=False, backgroundcolor='rgba(255,255,255,255)', range=[-2.5, 2.5]),
-            zaxis=dict(title='', showticklabels=False, showgrid=False, zeroline=False, backgroundcolor='rgba(255,255,255,255)', range=[-2.5, 2.5]),
+            xaxis=dict(
+                title='', 
+                showticklabels=False, 
+                showgrid=False, 
+                zeroline=False, 
+                backgroundcolor='rgba(255,255,255,255)', 
+                range=[-2.5, 2.5]
+            ),
+            yaxis=dict(
+                title='', 
+                showticklabels=False, 
+                showgrid=False, 
+                zeroline=False, 
+                backgroundcolor='rgba(255,255,255,255)', 
+                range=[-2.5, 2.5]
+            ),
+            zaxis=dict(
+                title='', 
+                showticklabels=False, 
+                showgrid=False, 
+                zeroline=False, 
+                backgroundcolor='rgba(255,255,255,255)', 
+                range=[-2.5, 2.5]
+            ),
             bgcolor='rgba(255,255,255,255)',
             aspectmode='cube',
             camera=dict(
@@ -166,8 +193,24 @@ def visualize(geometry):
         )
     )
 
-    spherical_harmonics_trace = go.Surface(e3nn.to_s2grid(sig, 100, 99, quadrature="soft").plotly_surface(radius=1., normalize_radius_by_max_amplitude=True, scale_radius_by_amplitude=True), name="Signal", showlegend=True)
-    atoms_trace = go.Scatter3d(x=geometry[:, 0], y=geometry[:, 1], z=geometry[:, 2], mode='markers', marker=dict(size=10, color='black'), showlegend=True, name="Points")
+    spherical_harmonics_trace = go.Surface(
+        e3nn.to_s2grid(sig, 100, 99, quadrature="soft").plotly_surface(
+            radius=1., 
+            normalize_radius_by_max_amplitude=True, 
+            scale_radius_by_amplitude=True
+        ), 
+        name="Signal", 
+        showlegend=True
+    )
+    atoms_trace = go.Scatter3d(
+        x=geometry[:, 0], 
+        y=geometry[:, 1], 
+        z=geometry[:, 2], 
+        mode='markers', 
+        marker=dict(size=10, color='black'), 
+        showlegend=True, 
+        name="Points"
+    )
     fig = go.Figure()
     fig.add_trace(spherical_harmonics_trace)
     fig.add_trace(atoms_trace)
@@ -181,7 +224,6 @@ class Spectra:
     The Spectra class is used to compute the power spectrum, bispectrum, and trispectrum of an array of irreducible representations.
     It also provides methods to set the maximum degree of spherical harmonics, the order of the spectrum, and the neighbors to consider.
     """
-    
     def __init__(self, lmax: int = 4, order: int = 2, neighbors: None = None, cutoff: callable = chemenv_cutoff):
         """
         Initializes the Spectra class.
@@ -200,6 +242,10 @@ class Spectra:
         self.cutoff = cutoff
         self.spectrum_function = {1: powerspectrum, 2: bispectrum, 3: trispectrum}[order]  # revise this to combine it with lmax
         self.structure = None
+
+
+    def __str__(self) -> str:
+        return f"Spectra(lmax={self.lmax}, order={self.order}, neighbors={self.neighbors}, cutoff={self.cutoff.__name__})"
 
 
     def set_lmax(self, lmax):
@@ -266,7 +312,9 @@ class Spectra:
         Returns:
             None
         """
-        self.structure = Structure.from_file(cif_file_path)
+        # self.structure = Structure.from_file(cif_file_path)
+        cif_parser = CifParser(cif_file_path, occupancy_tolerance=100)
+        self.structure = cif_parser.get_structures(primitive=False)[0]
 
 
     def load_structure(self, structure):
@@ -282,6 +330,51 @@ class Spectra:
         self.structure = structure
 
 
+    def compute_geometry_spectra(self, geometry):
+        """
+        Computes the spectra of a given geometry.
+
+        Parameters:
+            geometry (list): The geometry to compute the spectra for.
+
+        Returns:
+            list: The computed spectra for the given geometry.
+        """
+        sh_expansion = sum_of_diracs(geometry, self.lmax)
+        return self.spectrum_function(sh_expansion)
+
+
+    def compute_spherical_harmonic_spectra(self, sh_signal):
+        """
+        Computes the spectra of a given set of spherical harmonics.
+
+        Parameters:
+            spherical_harmonics (list): The spherical harmonics to compute the spectra for.
+
+        Returns:
+            list: The computed spectra for the given set of spherical harmonics.
+        """
+        return self.spectrum_function(sh_signal)
+
+
+    def get_atom_local_env(self, atom_site_number):
+        """
+        Gets the local environment of a given atom.
+
+        Parameters:
+            atom_site_number (int): The atom site number.
+
+        Returns:
+            list: The local environment of the given atom.
+        """
+        local_env = self.cutoff(self.structure, atom_site_number)
+        if self.neighbors:
+            local_env = [atom for atom in local_env if atom.specie.symbol in self.neighbors]
+        if not local_env:
+            return None
+        return jnp.stack([atom.coords for atom in local_env], axis=0) - self.structure[atom_site_number].coords.reshape(1, 3)
+
+
     def compute_atom_spectra(self, atom_site_number):
         """
         Computes the spectra of the local environment of a single atom.
@@ -292,12 +385,7 @@ class Spectra:
         Returns:
             dict: A dictionary mapping atom site number to the spectrum of that atom's local environment.
         """
-        local_env = self.cutoff(self.structure, atom_site_number)
-        if self.neighbors:
-            local_env = [atom for atom in local_env if atom.specie.symbol in self.neighbors]
-        if not local_env:
-            return None
-        local_env = jnp.stack([atom.coords for atom in local_env], axis=0) - self.structure[atom_site_number].coords.reshape(1, 3)
+        local_env = self.get_atom_local_env(atom_site_number)
         sh_expansion = sum_of_diracs(local_env, self.lmax)
         return self.spectrum_function(sh_expansion)
     
@@ -323,7 +411,10 @@ class Spectra:
             set: A set of indices of the symmetry-unique atoms in the structure.
         """
         sga = SpacegroupAnalyzer(self.structure)
-        return set(sga.get_symmetry_dataset()['equivalent_atoms'])
+        if (symmetry_dataset := sga.get_symmetry_dataset()):
+            return set(symmetry_dataset['equivalent_atoms'])
+        else:
+            return set(range(len(self.structure)))
 
 
     def compute_structure_spectra(self, symmetry_unique_only=True):
@@ -344,70 +435,59 @@ class Spectra:
         return {atom_site_number: self.compute_atom_spectra(atom_site_number) for atom_site_number in atom_site_numbers}
 
 
-    def invert(self, true_spectrum, n_points=12):
+    def invert(self, true_spectrum, max_iter=1000, print_loss=False): 
         """
-        Inverts the spectra to obtain the original local environment up to a rotation.
+        Inverts the spectra to obtain the geometry and performs fitting on the provided parameters.
+
+        Parameters:
+            true_spectrum (jnp.ndarray): The true power spectrum.
+            max_iter (int, optional): Maximum number of iterations. Defaults to 1000.
+
+        Returns:
+            jnp.ndarray: The predicted geometry.
         """
         rng = jax.random.PRNGKey(0)
         init_rng, rng = jax.random.split(rng)
-        # Adding noise to the initial geometry
         noise = jax.random.normal(rng, (12, 3))
-        init_geometry = jnp.array([[1, 0 ,0]] * 12) + 0.0000001 * noise
-        init_geometry /= jnp.linalg.norm(init_geometry, axis=1, keepdims=True)
-        init_params = {"predicted_geometry": init_geometry}
+
+        golden_ratio = (1 + jnp.sqrt(5)) / 2
+        icosahedron = jnp.array([
+            [-1, golden_ratio, 0],
+            [1, golden_ratio, 0],
+            [-1, -golden_ratio, 0],
+            [1, -golden_ratio, 0],
+            [0, -1, golden_ratio],
+            [0, 1, golden_ratio],
+            [0, -1, -golden_ratio],
+            [0, 1, -golden_ratio],
+            [golden_ratio, 0, -1],
+            [golden_ratio, 0, 1],
+            [-golden_ratio, 0, -1],
+            [-golden_ratio, 0, 1]
+        ]) / jnp.sqrt(1 + golden_ratio**2)  # Normalize to unit length
+        initial_geometry = icosahedron + 0.01 * noise
+        parameters = {"predicted_geometry": initial_geometry}
         optimizer = optax.adam(learning_rate=1e-2)
-        return self.fit(init_params, optimizer, true_spectrum)
 
-
-    def fit(
-            self, 
-            params: optax.Params, 
-            optimizer: optax.GradientTransformation, 
-            true_spectrum: jnp.ndarray,
-            max_iter: int = 1000
-        ) -> optax.Params:
-        """
-        Performs fitting on the provided parameters.
+        optimizer_state = optimizer.init(parameters)
         
-        Args:
-            params (optax.Params): Initial parameters.
-            optimizer (optax.GradientTransformation): The optimizer to use.
-            true_spectrum (jnp.ndarray): True power spectrum.
-            max_iter (int, optional): Maximum number of iterations. Defaults to 2500.
-
-        Returns:
-            optax.Params: The fitted parameters.
-        """
-        opt_state = optimizer.init(params)
-        
-        def loss(params):
-            predicted_geometry = params["predicted_geometry"]
+        def loss(parameters):
+            predicted_geometry = parameters["predicted_geometry"]
             predicted_signal = sum_of_diracs(predicted_geometry, self.lmax)
             predicted_spectrum = self.spectrum_function(predicted_signal)
-            # return optax.l2_loss(true_spectrum, predicted_spectrum).mean() # 30x slower
             return jnp.abs(true_spectrum - predicted_spectrum).mean()
 
         @jax.jit
-        def step(params, opt_state):
-            loss_value, grads = jax.value_and_grad(loss)(params)
-            grad_norms = jnp.linalg.norm(grads["predicted_geometry"], axis=1)
-            updates, opt_state = optimizer.update(grads, opt_state, params)
-            params = optax.apply_updates(params, updates)
-            return params, opt_state, loss_value, grad_norms
+        def step(parameters, optimizer_state):
+            loss_value, grads = jax.value_and_grad(loss)(parameters)
+            updates, optimizer_state = optimizer.update(grads, optimizer_state, parameters)
+            parameters = optax.apply_updates(parameters, updates)
+            return parameters, optimizer_state, loss_value
 
-        all_steps = []
-        all_params = []
-        all_losses = []
-        all_grad_norms = []
-        for iter in range(max_iter):
-            params, opt_state, loss_value, grad_norms = step(params, opt_state)
-            if iter % 100 == 0:
-                print(f"Step {iter}, Loss: {loss_value}")
-            
-            if iter % 10 == 0:
-                all_steps.append(iter)
-                all_params.append(params)
-                all_losses.append(loss_value)
-                all_grad_norms.append(grad_norms)
+        for i in range(max_iter):
+            parameters, optimizer_state, loss_value = step(parameters, optimizer_state)
+            if print_loss and i % 100 == 0:
+                print(f"Iteration {i}, Loss: {loss_value}")
 
-        return all_steps, all_params, all_losses, all_grad_norms
+        return parameters["predicted_geometry"] # TODO: use find_peaks
+
