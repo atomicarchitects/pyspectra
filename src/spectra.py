@@ -2,7 +2,7 @@ import jax
 from jax import lax
 import e3nn_jax as e3nn
 import jax.numpy as jnp
-from pymatgen.analysis.local_env import get_neighbors_of_site_with_index
+from pymatgen.analysis.local_env import get_neighbors_of_site_with_index, CrystalNN
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from pymatgen.io.cif import CifParser
 from pymatgen.analysis.chemenv.coordination_environments.chemenv_strategies import (
@@ -173,8 +173,27 @@ def chemenv_cutoff(strategy="multi_weights"):
         if len(neighbor_sets) == 0:
             return []
         else:
-            return [structure[neighbor['index']] for neighbor in neighbor_sets[0].neighb_sites_and_indices]
+            return [neighbor['site'] for neighbor in neighbor_sets[0].neighb_sites_and_indices]
     return cutoff_function
+
+
+def crystalnn_cutoff():
+    """
+    This function creates a cutoff function using the CrystalNN approach (with parameters set for pure geometric neighbor finding).
+
+    Parameters:
+        structure (Structure): The structure for which the cutoff is to be calculated.
+        site_index (int): The site number of the atom for which the cutoff is to be calculated.
+
+    Returns:
+        function: A function that takes a structure and an atom and returns all atoms within the cutoff distance of the given atom using the CrystalNN approach.
+    """
+    def cutoff_function(structure, site_index):
+        nn = CrystalNN(distance_cutoffs=None, x_diff_weight=0, porous_adjustment=False)
+        local_env =  nn.get_nn_info(structure, site_index)
+        return [neighbor['site'] for neighbor in local_env]
+    return cutoff_function
+
 
 
 def visualize_signal(signal):
@@ -443,6 +462,19 @@ class Spectra:
         return self.spectrum_function(sh_signal)
 
 
+    def get_local_neighbors(self, site_index):
+        """
+        Gets the neighbors of a given atom.
+
+        Parameters:
+            site_index (int): The atom site number.
+
+        Returns:
+            list: The neighbors of the given atom.
+        """
+        return self.cutoff(self.structure, site_index)
+
+
     def get_local_geometry(self, site_index):
         """
         Gets the local environment of a given atom.
@@ -453,7 +485,7 @@ class Spectra:
         Returns:
             list: The local environment of the given atom.
         """
-        local_env = self.cutoff(self.structure, site_index)
+        local_env = self.get_local_neighbors(site_index)
         if len(local_env) > 0 and len(self.neighbors) > 0:
             local_env = [atom for atom in local_env if get_element(atom) in self.neighbors]
         if len(local_env) > 0:
@@ -496,7 +528,19 @@ class Spectra:
         return None
     
 
-    def compute_element_spectra(self, element):
+    def get_element_indices(self, element):
+        """
+        Gets the indices of atoms of a given element in a structure.
+
+        Parameters:
+            element (str): The element.
+
+        Returns:
+            list: A list of indices of atoms of the given element in the structure.
+        """
+        return [site_index for site_index, atom in enumerate(self.structure) if get_element(atom) == element]
+
+    def compute_element_spectra(self, element): #TODO: update this to use get_element_indices
         """
         Computes the spectra of all atoms of a given element in a structure.
 
@@ -506,7 +550,7 @@ class Spectra:
         Returns:
             dict: A dictionary mapping atom site number to the spectrum of that atom's local environment.
         """
-        return {site_index: self.compute_atom_spectra(site_index) for site_index, atom in enumerate(self.structure) if get_element(atom) == element}
+        return {site_index: self.compute_atom_spectra(site_index) for site_index, atom in enumerate(self.structure) if get_element(atom) == element} 
 
 
     def get_symmetry_unique_indices(self):
