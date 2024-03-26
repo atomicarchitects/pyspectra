@@ -10,16 +10,11 @@ import pandas as pd
 warnings.filterwarnings("ignore")
 
 lmax = 4
-cif_dirs = ['csd/S']
-# cutoff = spectra.chemenv_cutoff(strategy='multi_weights') # for chemenv_cutoff, strategy = 'simplest' or 'multi_weights' 
-# analysis_name = "csd_AgS_bispectra_lmax_4_multi_weights_chemenv_cutoff"
-# cutoff = spectra.radial_cutoff(radius=3.1)
-# analysis_name = "csd_AgS_bispectra_lmax_4_radius3.1_cutoff"
+cif_dirs = ['mp/AgS']
 cutoff = spectra.min_dist_cutoff()
-analysis_name = "csd_AgS_bispectra_lmax_4_min_dist_cutoff"
+analysis_name = "mp_AgS_bispectra_lmax_4_min_dist_cutoff"
 # neighbors = ['S']
 neighbors = []
-
 
 cif_dirs = [os.path.join(os.getcwd(), f"../cifs/{cif_dir}") for cif_dir in cif_dirs]
 database = sys.argv[1] # either "mongodb" or "csv"
@@ -53,7 +48,7 @@ for cif_dir in cif_dirs:
                     'local_elements': bispectrum.get_local_elements(site_index),
                     'bispectrum': spectrum.tolist()
                 }
-                
+
                 if database == "mongodb":
                     collection.insert_one(local_env_dict)
 
