@@ -9,4 +9,4 @@ figures/
 visualization/static/
 *.csv
 queries/
-
+*.out
