@@ -10,3 +10,4 @@ visualization/static/
 *.csv
 queries/
 *.out
+visualization/
