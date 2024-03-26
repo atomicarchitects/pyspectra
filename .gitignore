@@ -8,3 +8,5 @@ cifs/
 figures/
 visualization/static/
 *.csv
+queries/
+
