@@ -5,7 +5,7 @@
 venv/
 notebooks/
 cifs/
-figures/
+graphics/
 visualization/static/
 *.csv
 queries/
