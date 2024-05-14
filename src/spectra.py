@@ -46,7 +46,7 @@ def sum_of_diracs(
     return e3nn.sum(e3nn.s2_dirac(vectors, lmax, p_val=1, p_arg=-1) * values[:, None], axis=0)
 
 
-def with_peaks_at(vectors: chex.Array, lmax: int, use_sum_of_diracs: bool = False) -> e3nn_jax.IrrepsArray:
+def with_peaks_at(vectors: chex.Array, lmax: int, use_sum_of_diracs: bool = False) -> e3nn.IrrepsArray:
     """
     Compute a spherical harmonics expansion given Dirac delta functions defined on the sphere.
 
@@ -66,7 +66,7 @@ def with_peaks_at(vectors: chex.Array, lmax: int, use_sum_of_diracs: bool = Fals
     vectors = jnp.where(mask[:, None], vectors, 0)
     values = jnp.where(mask, values, 0)
  
-    coeff = e3nn_jax.spherical_harmonics(e3nn_jax.s2_irreps(lmax), e3nn_jax.IrrepsArray("1o", vectors), normalize=True).array
+    coeff = e3nn.spherical_harmonics(e3nn.s2_irreps(lmax), e3nn.IrrepsArray("1o", vectors), normalize=True).array
     
     A = jnp.einsum(
         "ai,bi->ab",
@@ -79,9 +79,9 @@ def with_peaks_at(vectors: chex.Array, lmax: int, use_sum_of_diracs: bool = Fals
 
     sh_expansion = solution @ coeff
     
-    irreps = e3nn_jax.s2_irreps(lmax)
+    irreps = e3nn.s2_irreps(lmax)
     
-    return e3nn_jax.IrrepsArray(irreps, sh_expansion)
+    return e3nn.IrrepsArray(irreps, sh_expansion)
 
 
 def powerspectrum(x: e3nn.IrrepsArray) -> e3nn.IrrepsArray:
