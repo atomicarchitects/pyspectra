@@ -46,6 +46,44 @@ def sum_of_diracs(
     return e3nn.sum(e3nn.s2_dirac(vectors, lmax, p_val=1, p_arg=-1) * values[:, None], axis=0)
 
 
+def with_peaks_at(vectors: chex.Array, lmax: int, use_sum_of_diracs: bool = False) -> e3nn_jax.IrrepsArray:
+    """
+    Compute a spherical harmonics expansion given Dirac delta functions defined on the sphere.
+
+    Parameters:
+        vectors (jnp.ndarray): An array of vectors. Each row represents a vector.
+        lmax (int): The maximum degree of the spherical harmonics expansion.
+
+    Returns:
+        e3nn.IrrepsArray: An array representing the weighted sum of the spherical harmonics expansion.
+    """
+    if use_sum_of_diracs:
+        return sum_of_diracs(vectors, lmax)
+
+    values = jnp.linalg.norm(vectors, axis=1)
+
+    mask = (values != 0)
+    vectors = jnp.where(mask[:, None], vectors, 0)
+    values = jnp.where(mask, values, 0)
+ 
+    coeff = e3nn_jax.spherical_harmonics(e3nn_jax.s2_irreps(lmax), e3nn_jax.IrrepsArray("1o", vectors), normalize=True).array
+    
+    A = jnp.einsum(
+        "ai,bi->ab",
+        coeff,
+        coeff
+    )
+    solution = jnp.linalg.lstsq(A, values)[0]
+    
+    assert jnp.max(jnp.abs(values - A @ solution)) < 1e-5 * jnp.max(jnp.abs(values)) # checkify
+
+    sh_expansion = solution @ coeff
+    
+    irreps = e3nn_jax.s2_irreps(lmax)
+    
+    return e3nn_jax.IrrepsArray(irreps, sh_expansion)
+
+
 def powerspectrum(x: e3nn.IrrepsArray) -> e3nn.IrrepsArray:
     """
     Computes the power spectrum of an array of irreducible representations.
