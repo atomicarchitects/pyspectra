@@ -294,8 +294,8 @@ def visualize_signal(signal):
     return fig
 
 
-def visualize_geometry(geometry, show_points=False):
-    signal = sum_of_diracs(geometry, lmax=4)
+def visualize_geometry(geometry, lmax=4, show_points=False):
+    signal = with_peaks_at(geometry, lmax=lmax, use_sum_of_diracs=False)
     fig = visualize_signal(signal)
     if show_points:
         atoms_trace = go.Scatter3d(
@@ -483,7 +483,7 @@ class Spectra:
         Returns:
             list: The computed spectra for the given geometry.
         """
-        sh_expansion = sum_of_diracs(geometry, self.lmax)
+        sh_expansion = with_peaks_at(geometry, self.lmax, use_sum_of_diracs=False)
         return self.spectrum_function(sh_expansion)
 
 
@@ -561,7 +561,7 @@ class Spectra:
         """
         local_env = self.get_local_geometry(site_index)
         if local_env is not None:
-            sh_expansion = sum_of_diracs(local_env, self.lmax)
+            sh_expansion = with_peaks_at(local_env, self.lmax, use_sum_of_diracs=False)
             return self.spectrum_function(sh_expansion)
         return None
     
@@ -667,7 +667,7 @@ class Spectra:
         
         def loss(parameters):
             predicted_geometry = parameters["predicted_geometry"]
-            predicted_signal = sum_of_diracs(predicted_geometry, self.lmax)
+            predicted_signal = with_peaks_at(predicted_geometry, self.lmax, use_sum_of_diracs=False)
             predicted_spectrum = self.spectrum_function(predicted_signal)
             return jnp.abs(true_spectrum - predicted_spectrum).mean()
 
