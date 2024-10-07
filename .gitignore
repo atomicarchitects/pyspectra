@@ -11,3 +11,4 @@ visualization/static/
 queries/
 *.out
 visualization/
+*.pkl
