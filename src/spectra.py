@@ -2,26 +2,13 @@ import jax
 from jax import lax
 import e3nn_jax as e3nn
 import jax.numpy as jnp
-from pymatgen.analysis.local_env import get_neighbors_of_site_with_index, CrystalNN
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from pymatgen.io.cif import CifParser
-from pymatgen.analysis.chemenv.coordination_environments.chemenv_strategies import (
-    SimplestChemenvStrategy,
-)
-from pymatgen.analysis.chemenv.coordination_environments.chemenv_strategies import (
-    MultiWeightsChemenvStrategy,
-)
-from pymatgen.analysis.chemenv.coordination_environments.coordination_geometry_finder import (
-    LocalGeometryFinder,
-)
-from pymatgen.analysis.chemenv.coordination_environments.structure_environments import (
-    LightStructureEnvironments,
-)
-from pymatgen.core.sites import PeriodicSite
 import optax
 import chex
-import plotly.graph_objects as go
 import matplotlib as plt
+from utils.cutoffs import crystalnn_cutoff
+from utils.elements import get_element
 
 
 def sum_of_diracs(
@@ -75,7 +62,10 @@ def with_peaks_at(vectors: chex.Array, lmax: int, use_sum_of_diracs: bool = Fals
     )
     solution = jnp.linalg.lstsq(A, values)[0]
     
-    assert jnp.max(jnp.abs(values - A @ solution)) < 1e-5 * jnp.max(jnp.abs(values)) # checkify
+    # assert jnp.max(jnp.abs(values - A @ solution)) < 1e-5 * jnp.max(jnp.abs(values)) # checkify
+
+    if jnp.max(jnp.abs(values - A @ solution)) < 1e-5 * jnp.max(jnp.abs(values)):
+        return sum_of_diracs(vectors, lmax)
 
     sh_expansion = solution @ coeff
     
@@ -126,208 +116,6 @@ def trispectrum(x: e3nn.IrrepsArray) -> e3nn.IrrepsArray:
     return e3nn.IrrepsArray(rtp.irreps, jnp.einsum("i,j,k,l,ijklz->z", x.array, x.array, x.array, x.array, rtp.array)).array
 
 
-def get_element(atom: PeriodicSite):
-    """
-    Gets the element of an atom.
-
-    Parameters:
-        atom (pymatgen.core.sites.PeriodicSite): The atom. 
-
-    Returns:
-        str: The element of the atom.
-    """
-    return atom.species.elements[0].symbol
-
-
-def radial_cutoff(radius=3.0):
-    """
-    Get all neighbors to a site within a sphere of radius r. Excludes the site itself.
-
-    Parameters:
-        radius (float): The cutoff radius. Default is 3.0.
-
-    Returns:
-        function: A function that takes a structure and an atom and returns all atoms within the cutoff radius of the given atom.
-    """
-    return lambda structure, atom: structure.get_neighbors(structure[int(atom)], radius)
-
-
-
-
-
-def voronoi_cutoff(tol=0, cutoff=13.0):
-    """
-    Uses a Voronoi algorithm to determine near neighbors for each site in a structure.
-
-    Parameters:
-        tol (float): Tolerance parameter for near-neighbor finding. Faces that are smaller than tol fraction of the largest face are not included in the tessellation. Default is 0.
-        cutoff (float): Cutoff radius in Angstroms to look for near-neighbor atoms. Default is 13.0.
-
-    Returns:
-        function: A function that takes a structure and an atom and returns all atoms within the cutoff distance of the given atom using the Voronoi approach.
-    """
-    return lambda structure, atom: get_neighbors_of_site_with_index(structure, int(atom), approach="voronoi", delta=tol, cutoff=cutoff)
-
-
-def min_dist_cutoff(tol=0.1, cutoff=10.0):
-    """
-    Determine near-neighbor sites using the nearest neighbor(s) at distance, d_min, plus all neighbors within a distance (1 + tol) * d_min, where tol is a (relative) distance tolerance parameter.
-
-    Parameters:
-        delta (float): Tolerance parameter for neighbor identification. Default is 0.1.
-        cutoff (float): Cutoff radius in Angstrom to look for trial near-neighbor sites. Default is 10.0.
-
-    Returns:
-        function: A function that takes a structure and an atom and returns all atoms within the cutoff distance of the given atom using the minimum distance approach.
-    """
-    return lambda structure, atom: get_neighbors_of_site_with_index(structure, int(atom), approach="min_dist", delta=tol, cutoff=cutoff)
-
-
-def chemenv_cutoff(strategy="multi_weights"): 
-    """
-    This function creates a cutoff function using the ChemEnv approach.
-
-    Parameters:
-        structure (Structure): The structure for which the cutoff is to be calculated.
-        site_index (int): The site number of the atom for which the cutoff is to be calculated.
-
-    Returns:
-        function: A function that takes a structure and an atom and returns all atoms within the cutoff distance of the given atom using the ChemEnv approach.
-    """
-    if strategy == "simplest":
-        strategy = SimplestChemenvStrategy()
-    elif strategy == "multi_weights":
-        strategy = MultiWeightsChemenvStrategy.stats_article_weights_parameters()
-    else:
-        raise ValueError("Invalid strategy")
-    def cutoff_function(structure, site_index):
-        lgf = LocalGeometryFinder()
-        lgf.setup_structure(structure)
-        se = lgf.compute_structure_environments(structure, only_indices=[site_index])
-        lse = LightStructureEnvironments.from_structure_environments(
-            strategy=strategy, structure_environments=se
-        )
-        neighbor_sets = lse.neighbors_sets[site_index]
-        if len(neighbor_sets) == 0:
-            return []
-        else:
-            return [neighbor['site'] for neighbor in neighbor_sets[0].neighb_sites_and_indices]
-    return cutoff_function
-
-
-def crystalnn_cutoff():
-    """
-    This function creates a cutoff function using the CrystalNN approach (with parameters set for pure geometric neighbor finding).
-
-    Parameters:
-        structure (Structure): The structure for which the cutoff is to be calculated.
-        site_index (int): The site number of the atom for which the cutoff is to be calculated.
-
-    Returns:
-        function: A function that takes a structure and an atom and returns all atoms within the cutoff distance of the given atom using the CrystalNN approach.
-    """
-    def cutoff_function(structure, site_index):
-        nn = CrystalNN(distance_cutoffs=None, x_diff_weight=0, porous_adjustment=False)
-        local_env =  nn.get_nn_info(structure, site_index)
-        return [neighbor['site'] for neighbor in local_env]
-    return cutoff_function
-
-
-
-def visualize_signal(signal):
-    layout = go.Layout(
-        scene=dict(
-            xaxis=dict(
-                title='', 
-                showticklabels=False, 
-                showgrid=False, 
-                zeroline=False, 
-                backgroundcolor='rgba(255,255,255,255)', 
-                range=[-2.5, 2.5]
-            ),
-            yaxis=dict(
-                title='', 
-                showticklabels=False, 
-                showgrid=False, 
-                zeroline=False, 
-                backgroundcolor='rgba(255,255,255,255)', 
-                range=[-2.5, 2.5]
-            ),
-            zaxis=dict(
-                title='', 
-                showticklabels=False, 
-                showgrid=False, 
-                zeroline=False, 
-                backgroundcolor='rgba(255,255,255,255)', 
-                range=[-2.5, 2.5]
-            ),
-            bgcolor='rgba(255,255,255,255)',
-            aspectmode='cube',
-            camera=dict(
-                eye=dict(x=0.5, y=0.5, z=0.5)
-            )
-        ),
-        plot_bgcolor='rgba(255,255,255,255)',
-        paper_bgcolor='rgba(255,255,255,255)',
-        margin=dict(l=0, r=0, t=0, b=0),
-        legend=dict(
-            yanchor="top",
-            y=1,
-            xanchor="left",
-            x=0
-        )
-    )
-
-    spherical_harmonics_trace = go.Surface(
-        e3nn.to_s2grid(signal, 100, 99, quadrature="soft").plotly_surface(
-            radius=1., 
-            normalize_radius_by_max_amplitude=True, 
-            scale_radius_by_amplitude=True
-        ), 
-        name="Signal", 
-        showlegend=True
-    )
-
-    fig = go.Figure()
-    fig.add_trace(spherical_harmonics_trace)
-    fig.update_layout(layout)
-    return fig
-
-
-def visualize_geometry(geometry, lmax=4, show_points=False):
-    signal = with_peaks_at(geometry, lmax=lmax, use_sum_of_diracs=False)
-    fig = visualize_signal(signal)
-    if show_points:
-        atoms_trace = go.Scatter3d(
-            x=geometry[:, 0], 
-            y=geometry[:, 1], 
-            z=geometry[:, 2], 
-            mode='markers', 
-            marker=dict(size=10, color='black'), 
-            showlegend=True, 
-            name="Points"
-        )
-        fig.add_trace(atoms_trace)
-    return fig
-
-
-
-
-
-
-def colorplot(arr: jnp.ndarray):
-    """Plot spectra"""
-    # TODO: add functionality to plot multiple spectra (properly take into account max and min)
-    # TODO: add functionality to change dimensions of figure
-    reshaped_arr = arr.reshape(3, 5)  # Reshape the array into 3 rows of 5 components each
-    plt.figure(figsize=(15, 3))  # Adjust the figure size to accommodate the reshaped array
-    plt.axis("off")
-    vmax = jnp.maximum(jnp.abs(jnp.min(reshaped_arr)), jnp.max(reshaped_arr))  # Compute vmax using the reshaped array
-    return plt.imshow(reshaped_arr, cmap="PuOr", vmin=-vmax, vmax=vmax)  # Plot the reshaped array
-
-
-
-
 
 
 class Spectra:
@@ -335,7 +123,7 @@ class Spectra:
     The Spectra class is used to compute the power spectrum, bispectrum, and trispectrum of an array of irreducible representations.
     It also provides methods to set the maximum degree of spherical harmonics, the order of the spectrum, and the neighbors to consider.
     """
-    def __init__(self, lmax: int = 4, order: int = 2, neighbors: None = None, cutoff: callable = chemenv_cutoff):
+    def __init__(self, lmax: int = 4, order: int = 2, cutoff: callable = crystalnn_cutoff):
         """
         Initializes the Spectra class.
 
@@ -347,16 +135,16 @@ class Spectra:
         """
         self.lmax = lmax
         self.order = order  # 1 = power spectrum, 2 = bispectrum, 3 = trispectrum
-        if neighbors is None:
-            neighbors = []
-        self.neighbors = neighbors
+        # if neighbors is None:
+        #     neighbors = []
+        # self.neighbors = neighbors
         self.cutoff = cutoff
         self.spectrum_function = {1: powerspectrum, 2: bispectrum, 3: trispectrum}[order]  # revise this to combine it with lmax
         self.structure = None
 
 
     def __str__(self) -> str:
-        return f"Spectra(lmax={self.lmax}, order={self.order}, neighbors={self.neighbors}, cutoff={self.cutoff.__name__})"
+        return f"Spectra(lmax={self.lmax}, order={self.order}, cutoff={self.cutoff.__name__})"
 
 
     def set_lmax(self, lmax):
@@ -387,17 +175,17 @@ class Spectra:
         self.spectrum_function = {1: powerspectrum, 2: bispectrum, 3: trispectrum}[self.order]
 
 
-    def set_neighbors(self, neighbors):
-        """
-        Sets the neighbors to consider.
+    # def set_neighbors(self, neighbors):
+    #     """
+    #     Sets the neighbors to consider.
 
-        Parameters:
-            neighbors (list): The neighbors to consider.
+    #     Parameters:
+    #         neighbors (list): The neighbors to consider.
 
-        Returns:
-            None
-        """
-        self.neighbors = neighbors
+    #     Returns:
+    #         None
+    #     """
+    #     self.neighbors = neighbors
 
 
     def set_cutoff(self, cutoff):
@@ -424,7 +212,7 @@ class Spectra:
             None
         """
         # self.structure = Structure.from_file(cif_path)
-        cif_parser = CifParser(cif_path, occupancy_tolerance=1000)
+        cif_parser = CifParser(cif_path, occupancy_tolerance=1000)  
         self.structure = cif_parser.get_structures(primitive=False)[0]
 
 
@@ -470,7 +258,7 @@ class Spectra:
         Returns:
             str: The formula of the structure.
         """
-        return self.structure.formula
+        return self.structure.composition.reduced_formula
 
 
     def compute_geometry_spectra(self, geometry):
@@ -500,7 +288,7 @@ class Spectra:
         return self.spectrum_function(sh_signal)
 
 
-    def get_local_neighbors(self, site_index):
+    def get_local_environment(self, site_index, inclusive_neighbors=None, exact_neighbors=None):
         """
         Gets the neighbors of a given atom.
 
@@ -510,10 +298,20 @@ class Spectra:
         Returns:
             list: The neighbors of the given atom.
         """
-        return self.cutoff(self.structure, site_index)
+        neighbors = self.cutoff(self.structure, site_index)
+        if neighbors:
+            if inclusive_neighbors is not None:
+                for atom in neighbors:
+                    if get_element(atom) in inclusive_neighbors:
+                        return neighbors
+                return None
+            if exact_neighbors is not None:
+                neighbors = [atom for atom in neighbors if get_element(atom) in exact_neighbors]
+            return neighbors
+        return None
 
 
-    def get_local_geometry(self, site_index):
+    def get_local_geometry(self, site_index, inclusive_neighbors=None, exact_neighbors=None):
         """
         Gets the local environment of a given atom.
 
@@ -523,15 +321,11 @@ class Spectra:
         Returns:
             list: The local environment of the given atom.
         """
-        local_env = self.get_local_neighbors(site_index)
-        if len(local_env) > 0 and len(self.neighbors) > 0:
-            local_env = [atom for atom in local_env if get_element(atom) in self.neighbors]
-        if len(local_env) > 0:
-            return jnp.stack([atom.coords for atom in local_env], axis=0) - self.structure[site_index].coords.reshape(1, 3)
-        return None
+        local_env = self.get_local_environment(site_index, inclusive_neighbors, exact_neighbors)
+        return jnp.stack([atom.coords for atom in local_env], axis=0) - self.structure[site_index].coords.reshape(1, 3) if local_env else None
 
 
-    def get_local_elements(self, site_index):
+    def get_local_neighbors(self, site_index):
         """
         Gets the elements of the local environment of a given atom.
 
@@ -541,12 +335,14 @@ class Spectra:
         Returns:
             list: The elements of the local environment of the given atom.
         """
-        local_env = self.cutoff(self.structure, site_index)
-        if len(local_env) > 0:
-            if len(self.neighbors) > 0:
-                local_env = [atom for atom in local_env if get_element(atom) in self.neighbors]
-            return [get_element(atom) for atom in local_env] if local_env else None
-        return None
+        local_env = self.get_local_environment(site_index)
+        return [get_element(atom) for atom in local_env] if local_env else None
+
+        # if len(local_env) > 0:
+        #     if len(self.neighbors) > 0:
+        #         local_env = [atom for atom in local_env if get_element(atom) in self.neighbors]
+        #     return [get_element(atom) for atom in local_env] if local_env else None
+        # return None
     
 
     def compute_atom_spectra(self, site_index):
@@ -559,10 +355,10 @@ class Spectra:
         Returns:
             dict: A dictionary mapping atom site number to the spectrum of that atom's local environment.
         """
-        local_env = self.get_local_geometry(site_index)
-        if local_env is not None:
-            sh_expansion = with_peaks_at(local_env, self.lmax, use_sum_of_diracs=False)
-            return self.spectrum_function(sh_expansion)
+        local_geometry = self.get_local_geometry(site_index)
+        if local_geometry is not None:
+            signal = with_peaks_at(local_geometry, self.lmax, use_sum_of_diracs=False)
+            return self.spectrum_function(signal)
         return None
     
 
@@ -578,7 +374,8 @@ class Spectra:
         """
         return [site_index for site_index, atom in enumerate(self.structure) if get_element(atom) == element]
 
-    def compute_element_spectra(self, element): #TODO: update this to use get_element_indices
+
+    def compute_element_spectra(self, element, inclusive_neighbors=None, exact_neighbors=None): #TODO: inclusive and exclusive neighbors
         """
         Computes the spectra of all atoms of a given element in a structure.
 
@@ -588,7 +385,21 @@ class Spectra:
         Returns:
             dict: A dictionary mapping atom site number to the spectrum of that atom's local environment.
         """
-        return {site_index: self.compute_atom_spectra(site_index) for site_index, atom in enumerate(self.structure) if get_element(atom) == element} 
+        element_indices = self.get_element_indices(element)
+        ans = {}
+        for site_index in element_indices:
+            neighbors = self.get_local_neighbors(site_index)
+
+            if exact_neighbors is not None and set(neighbors) != set(exact_neighbors):
+                continue
+
+            if inclusive_neighbors is not None and not set(inclusive_neighbors).issubset(set(neighbors)):
+                continue
+
+            atom_spectra = self.compute_atom_spectra(site_index)
+            if atom_spectra is not None:
+                ans[site_index] = atom_spectra
+        return ans
 
 
     def get_symmetry_unique_indices(self):
