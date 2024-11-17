@@ -1,8 +1,8 @@
 import plotly.graph_objects as go
 import e3nn_jax as e3nn
-from spectra import with_peaks_at
+from spectra import sum_of_diracs
 import jax.numpy as jnp
-
+import matplotlib.pyplot as plt
 
 def visualize_signal(signal):
     layout = go.Layout(
@@ -64,8 +64,8 @@ def visualize_signal(signal):
     return fig
 
 
-def visualize_geometry(geometry, lmax=4, show_points=False, use_sum_of_diracs=False):
-    signal = with_peaks_at(geometry, lmax=lmax, use_sum_of_diracs=use_sum_of_diracs)
+def visualize_geometry(geometry, lmax=4, show_points=False):
+    signal = sum_of_diracs(geometry, lmax=lmax)
     fig = visualize_signal(signal)
     if show_points:
         atoms_trace = go.Scatter3d(

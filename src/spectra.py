@@ -33,45 +33,45 @@ def sum_of_diracs(
     return e3nn.sum(e3nn.s2_dirac(vectors, lmax, p_val=1, p_arg=-1) * values[:, None], axis=0)
 
 
-def with_peaks_at(vectors: chex.Array, lmax: int, use_sum_of_diracs: bool = False) -> e3nn.IrrepsArray:
-    """
-    Compute a spherical harmonics expansion given Dirac delta functions defined on the sphere.
+# def with_peaks_at(vectors: chex.Array, lmax: int, use_sum_of_diracs: bool = True) -> e3nn.IrrepsArray:
+#     """
+#     Compute a spherical harmonics expansion given Dirac delta functions defined on the sphere.
 
-    Parameters:
-        vectors (jnp.ndarray): An array of vectors. Each row represents a vector.
-        lmax (int): The maximum degree of the spherical harmonics expansion.
+#     Parameters:
+#         vectors (jnp.ndarray): An array of vectors. Each row represents a vector.
+#         lmax (int): The maximum degree of the spherical harmonics expansion.
 
-    Returns:
-        e3nn.IrrepsArray: An array representing the weighted sum of the spherical harmonics expansion.
-    """
-    if use_sum_of_diracs:
-        return sum_of_diracs(vectors, lmax)
+#     Returns:
+#         e3nn.IrrepsArray: An array representing the weighted sum of the spherical harmonics expansion.
+#     """
+#     if use_sum_of_diracs:
+#         return sum_of_diracs(vectors, lmax)
 
-    values = jnp.linalg.norm(vectors, axis=1)
+#     values = jnp.linalg.norm(vectors, axis=1)
 
-    mask = (values != 0)
-    vectors = jnp.where(mask[:, None], vectors, 0)
-    values = jnp.where(mask, values, 0)
+#     mask = (values != 0)
+#     vectors = jnp.where(mask[:, None], vectors, 0)
+#     values = jnp.where(mask, values, 0)
  
-    coeff = e3nn.spherical_harmonics(e3nn.s2_irreps(lmax), e3nn.IrrepsArray("1o", vectors), normalize=True).array
+#     coeff = e3nn.spherical_harmonics(e3nn.s2_irreps(lmax), e3nn.IrrepsArray("1o", vectors), normalize=True).array
     
-    A = jnp.einsum(
-        "ai,bi->ab",
-        coeff,
-        coeff
-    )
-    solution = jnp.linalg.lstsq(A, values)[0]
+#     A = jnp.einsum(
+#         "ai,bi->ab",
+#         coeff,
+#         coeff
+#     )
+#     solution = jnp.linalg.lstsq(A, values)[0]
     
-    # assert jnp.max(jnp.abs(values - A @ solution)) < 1e-5 * jnp.max(jnp.abs(values)) # checkify
+#     assert jnp.max(jnp.abs(values - A @ solution)) < 1e-5 * jnp.max(jnp.abs(values))
 
-    if jnp.max(jnp.abs(values - A @ solution)) < 1e-5 * jnp.max(jnp.abs(values)):
-        return sum_of_diracs(vectors, lmax)
+#     if jnp.max(jnp.abs(values - A @ solution)) < 1e-5 * jnp.max(jnp.abs(values)):
+#         return sum_of_diracs(vectors, lmax)
 
-    sh_expansion = solution @ coeff
+#     sh_expansion = solution @ coeff
     
-    irreps = e3nn.s2_irreps(lmax)
+#     irreps = e3nn.s2_irreps(lmax)
     
-    return e3nn.IrrepsArray(irreps, sh_expansion)
+#     return e3nn.IrrepsArray(irreps, sh_expansion)
 
 
 def powerspectrum(x: e3nn.IrrepsArray) -> e3nn.IrrepsArray:
@@ -271,7 +271,7 @@ class Spectra:
         Returns:
             list: The computed spectra for the given geometry.
         """
-        sh_expansion = with_peaks_at(geometry, self.lmax, use_sum_of_diracs=False)
+        sh_expansion = sum_of_diracs(geometry, self.lmax)
         return self.spectrum_function(sh_expansion)
 
 
@@ -357,7 +357,7 @@ class Spectra:
         """
         local_geometry = self.get_local_geometry(site_index)
         if local_geometry is not None:
-            signal = with_peaks_at(local_geometry, self.lmax, use_sum_of_diracs=False)
+            signal = sum_of_diracs(local_geometry, self.lmax)
             return self.spectrum_function(signal)
         return None
     
@@ -452,7 +452,6 @@ class Spectra:
             jnp.ndarray: The predicted geometry.
         """
         rng = jax.random.PRNGKey(0)
-        init_rng, rng = jax.random.split(rng)
         noise = jax.random.normal(rng, (12, 3))
 
         golden_ratio = (1 + jnp.sqrt(5)) / 2
@@ -470,15 +469,16 @@ class Spectra:
             [-golden_ratio, 0, -1],
             [-golden_ratio, 0, 1]
         ]) / jnp.sqrt(1 + golden_ratio**2)  # Normalize to unit length
-        initial_geometry = icosahedron + 0.01 * noise
+        initial_geometry = icosahedron + 0.1 * noise
         parameters = {"predicted_geometry": initial_geometry}
         optimizer = optax.adam(learning_rate=1e-2)
 
         optimizer_state = optimizer.init(parameters)
         
+        @jax.jit
         def loss(parameters):
             predicted_geometry = parameters["predicted_geometry"]
-            predicted_signal = with_peaks_at(predicted_geometry, self.lmax, use_sum_of_diracs=False)
+            predicted_signal = sum_of_diracs(predicted_geometry, self.lmax)
             predicted_spectrum = self.spectrum_function(predicted_signal)
             return jnp.abs(true_spectrum - predicted_spectrum).mean()
 
@@ -492,7 +492,7 @@ class Spectra:
         for i in range(max_iter):
             parameters, optimizer_state, loss_value = step(parameters, optimizer_state)
             if print_loss and i % 100 == 0:
-                print(f"Iteration {i}, Loss: {loss_value}")
+                print(f"Iteration {i}, Loss: {loss_value.item()}")
 
         return parameters["predicted_geometry"] # TODO: use find_peaks
 
