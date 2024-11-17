@@ -8,7 +8,7 @@ cifs/
 graphics/
 visualization/static/
 *.csv
-queries/
 *.out
 visualization/
 *.pkl
+data/
