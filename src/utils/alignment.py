@@ -1,23 +1,29 @@
 """
 Utility functions for alignment of spherical signals.
-"""
 
+This module provides functions for aligning spherical signals through quaternion-based
+rotations. It includes methods for sampling random quaternions, computing distances
+between signals on a sphere, and optimizing rotational alignment using gradient descent.
+"""
 import jax
 import jax.numpy as jnp
 import e3nn_jax as e3nn
 import optax
 
+
 @jax.jit
 def sample_uniform_quaternion(key):
-    """
-    Sample a uniform random quaternion using the method described in:
-    "Uniform Random Rotations" by James Arvo.
+    """Sample a uniform random quaternion using Arvo's method.
+    
+    Implements the algorithm from "Uniform Random Rotations" by James Arvo
+    to generate uniformly distributed random quaternions representing 3D rotations.
     
     Args:
-        key: JAX PRNG key
+        key: JAX PRNG key for random number generation
     
     Returns:
-        q: normalized quaternion as a 4D array [w, x, y, z]
+        jnp.ndarray: A normalized quaternion as a 4D array [w, x, y, z] representing
+            a random rotation
     """
     # Split the key for multiple random number generations
     key1, key2, key3 = jax.random.split(key, 3)
@@ -41,16 +47,17 @@ def sample_uniform_quaternion(key):
     
     return jnp.array([w, x, y, z])
 
+
 def sample_multiple_quaternions(key, num_samples):
-    """
-    Sample multiple uniform random quaternions.
+    """Sample multiple uniform random quaternions in parallel.
     
     Args:
-        key: JAX PRNG key
-        num_samples: int, number of quaternions to sample
+        key: JAX PRNG key for random number generation
+        num_samples: Number of quaternions to sample
     
     Returns:
-        qs: array of shape (num_samples, 4) containing the sampled quaternions
+        jnp.ndarray: Array of shape (num_samples, 4) containing the sampled quaternions,
+            where each quaternion is represented as [w, x, y, z]
     """
     # Create multiple keys, one for each sample
     keys = jax.random.split(key, num_samples)
@@ -66,21 +73,49 @@ def sample_multiple_quaternions(key, num_samples):
 
 @jax.jit
 def normalize_quaternion(q):
-    """Normalize quaternion to unit length"""
+    """Normalize a quaternion to unit length.
+    
+    Args:
+        q: Input quaternion as a 4D array [w, x, y, z]
+    
+    Returns:
+        jnp.ndarray: Normalized quaternion with unit length
+    """
     return q / jnp.linalg.norm(q)
 
 
 @jax.jit
+def signal_to_s2grid_vectors(signal):
+    """Convert a spherical signal to grid vectors.
+    
+    Args:
+        signal: Input spherical signal
+        
+    Returns:
+        jnp.ndarray: Array of shape (N, 3) containing the grid vectors
+    """
+    signal_grid = e3nn.to_s2grid(signal, 30, 29, quadrature="soft")
+    signal_vectors = signal_grid.grid_vectors * signal_grid.grid_values[..., None]
+    signal_vectors = signal_vectors.reshape((-1, 3))
+    return signal_vectors
+
+
+@jax.jit
 def spherical_distance(signal1, signal2):
-    """Spherical distance calculation"""
-    signal1_grid = e3nn.to_s2grid(signal1, 30, 29, quadrature="soft")
-    signal2_grid = e3nn.to_s2grid(signal2, 30, 29, quadrature="soft")
-
-    signal1_vectors = signal1_grid.grid_vectors * signal1_grid.grid_values[..., None]
-    signal2_vectors = signal2_grid.grid_vectors * signal2_grid.grid_values[..., None]
-
-    signal1_vectors = signal1_vectors.reshape((-1, 3))
-    signal2_vectors = signal2_vectors.reshape((-1, 3))
+    """Calculate the distance between two spherical signals.
+    
+    Computes the mean minimum squared Euclidean distance between the grid points
+    of two spherical signals.
+    
+    Args:
+        signal1: First spherical signal
+        signal2: Second spherical signal
+        
+    Returns:
+        float: Mean minimum squared distance between the signals
+    """
+    signal1_vectors = signal_to_s2grid_vectors(signal1)
+    signal2_vectors = signal_to_s2grid_vectors(signal2)
     
     squared_distances = jnp.linalg.norm(
         signal1_vectors[:, None, :] - signal2_vectors[None, :, :], 
@@ -91,12 +126,32 @@ def spherical_distance(signal1, signal2):
 
 @jax.jit
 def loss_fn(quaternion, signal1, signal2):
-    """Loss function to minimize"""
+    """Compute the alignment loss between two signals under a rotation.
+    
+    Args:
+        quaternion: Rotation quaternion to apply to signal1
+        signal1: First spherical signal to be rotated
+        signal2: Second spherical signal (target)
+        
+    Returns:
+        float: Distance between the rotated signal1 and signal2
+    """
     rotated_signal1 = signal1.transform_by_quaternion(quaternion)
     return spherical_distance(rotated_signal1, signal2)
 
 
 def find_best_random_quaternion(key, signal1, signal2, num_samples=100):
+    """Find the best aligning quaternion from a random sample.
+    
+    Args:
+        key: JAX PRNG key for random sampling
+        signal1: First spherical signal to be rotated
+        signal2: Second spherical signal (target)
+        num_samples: Number of random quaternions to try
+        
+    Returns:
+        jnp.ndarray: Best quaternion found from the random samples
+    """
     quaternions = sample_multiple_quaternions(key, num_samples)
     return quaternions[jnp.argmin(jnp.array([loss_fn(q, signal1, signal2) for q in quaternions]))]
 
@@ -108,17 +163,20 @@ def align_signals(
     learning_rate=0.01,
     num_iterations=250,
 ):
-    """
-    Find optimal rotation using gradient descent
+    """Find optimal rotation to align two spherical signals using gradient descent.
     
-    Parameters:
-        signal1: First spherical signal
-        signal2: Second spherical signal
+    Uses Adam optimizer to find the quaternion rotation that best aligns signal1
+    with signal2 by minimizing their spherical distance.
+    
+    Args:
+        signal1: First spherical signal to be rotated
+        signal2: Second spherical signal (target)
         initial_quaternion: Starting quaternion for optimization
-        learning_rate: Learning rate for optimizer
+        learning_rate: Learning rate for Adam optimizer
         num_iterations: Number of optimization iterations
+        
     Returns:
-        Optimized quaternion
+        jnp.ndarray: Optimized quaternion that best aligns the signals
     """
     # Create optimizer
     optimizer = optax.adam(learning_rate)
@@ -141,4 +199,6 @@ def align_signals(
             current_quaternion, opt_state, signal1, signal2
         )
         
-    return current_quaternion
+    final_loss = loss_fn(current_quaternion, signal1, signal2)
+
+    return current_quaternion, final_loss
