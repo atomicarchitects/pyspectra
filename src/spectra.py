@@ -275,17 +275,41 @@ class Spectra:
         return self.spectrum_function(sh_expansion)
 
 
-    def compute_spherical_harmonic_spectra(self, sh_signal):
+    def compute_geometry_sh_signal(self, geometry):
+        """
+        Computes the spherical harmonics signal for a given geometry.
+        """
+        return sum_of_diracs(geometry, self.lmax)
+
+
+    def compute_sh_signal(self, site_index):
+        """
+        Computes the spherical harmonics signal for a given atom.
+
+        Parameters:
+            site_index (int): The atom site number.
+
+        Returns:
+            e3nn.IrrepsArray: The spherical harmonics signal for the given atom.
+        """
+        local_geometry = self.get_local_geometry(site_index)
+        if local_geometry is not None:
+            return sum_of_diracs(local_geometry, self.lmax)
+        return None
+
+
+    def compute_sh_signal_spectra(self, sh_signal):
         """
         Computes the spectra of a given set of spherical harmonics.
 
         Parameters:
-            spherical_harmonics (list): The spherical harmonics to compute the spectra for.
+            sh_signal (e3nn.IrrepsArray): The spherical harmonics to compute the spectra for.
 
         Returns:
             list: The computed spectra for the given set of spherical harmonics.
         """
         return self.spectrum_function(sh_signal)
+    
 
 
     def get_local_environment(self, site_index, inclusive_neighbors=None, exact_neighbors=None):
@@ -325,7 +349,7 @@ class Spectra:
         return jnp.stack([atom.coords for atom in local_env], axis=0) - self.structure[site_index].coords.reshape(1, 3) if local_env else None
 
 
-    def get_local_neighbors(self, site_index):
+    def get_local_elements(self, site_index):
         """
         Gets the elements of the local environment of a given atom.
 
