@@ -7,7 +7,7 @@ from pymatgen.io.cif import CifParser
 import optax
 import chex
 import matplotlib as plt
-from utils.cutoffs import crystalnn_cutoff
+from utils.cutoffs import crystalnn_cutoff, radial_cutoff
 from utils.elements import get_element
 
 
@@ -123,7 +123,7 @@ class Spectra:
     The Spectra class is used to compute the power spectrum, bispectrum, and trispectrum of an array of irreducible representations.
     It also provides methods to set the maximum degree of spherical harmonics, the order of the spectrum, and the neighbors to consider.
     """
-    def __init__(self, lmax: int = 4, order: int = 2, cutoff: callable = crystalnn_cutoff):
+    def __init__(self, lmax: int = 4, order: int = 2, cutoff: callable = crystalnn_cutoff()):
         """
         Initializes the Spectra class.
 
@@ -464,7 +464,7 @@ class Spectra:
         return structure_spectra
 
 
-    def invert(self, true_spectrum, max_iter=1000, print_loss=False): 
+    def invert(self, true_spectrum, max_iter=1000, print_loss=False, seed=0): 
         """
         Inverts the spectra to obtain the geometry and performs fitting on the provided parameters.
 
@@ -475,7 +475,7 @@ class Spectra:
         Returns:
             jnp.ndarray: The predicted geometry.
         """
-        rng = jax.random.PRNGKey(0)
+        rng = jax.random.PRNGKey(seed)
         noise = jax.random.normal(rng, (12, 3))
 
         golden_ratio = (1 + jnp.sqrt(5)) / 2
@@ -518,5 +518,5 @@ class Spectra:
             if print_loss and i % 100 == 0:
                 print(f"Iteration {i}, Loss: {loss_value.item()}")
 
-        return parameters["predicted_geometry"] # TODO: use find_peaks
+        return parameters["predicted_geometry"]
 

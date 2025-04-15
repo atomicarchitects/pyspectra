@@ -4,7 +4,7 @@ from spectra import sum_of_diracs
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 
-def visualize_signal(signal):
+def visualize_signal(signal, camera_distance=0.3):
     layout = go.Layout(
         scene=dict(
             xaxis=dict(
@@ -34,7 +34,7 @@ def visualize_signal(signal):
             bgcolor='rgba(255,255,255,255)',
             aspectmode='cube',
             camera=dict(
-                eye=dict(x=0.5, y=0.5, z=0.5)
+                eye=dict(x=camera_distance, y=camera_distance, z=camera_distance)
             )
         ),
         plot_bgcolor='rgba(255,255,255,255)',
@@ -64,14 +64,15 @@ def visualize_signal(signal):
     return fig
 
 
-def visualize_geometry(geometry, lmax=4, show_points=False):
+def visualize_geometry(geometry, lmax=4, show_points=False, camera_distance=0.3):
     signal = sum_of_diracs(geometry, lmax=lmax)
-    fig = visualize_signal(signal)
+    scaled_geometry = geometry / jnp.max(jnp.linalg.norm(geometry, axis=1))
+    fig = visualize_signal(signal, camera_distance=camera_distance)
     if show_points:
         atoms_trace = go.Scatter3d(
-            x=geometry[:, 0], 
-            y=geometry[:, 1], 
-            z=geometry[:, 2], 
+            x=scaled_geometry[:, 0], 
+            y=scaled_geometry[:, 1], 
+            z=scaled_geometry[:, 2], 
             mode='markers', 
             marker=dict(size=10, color='black'), 
             showlegend=True, 
@@ -85,7 +86,15 @@ def colorplot(arr: jnp.ndarray):
     """Plot spectra"""
     # TODO: add functionality to plot multiple spectra (properly take into account max and min)
     # TODO: add functionality to change dimensions of figure
-    reshaped_arr = arr.reshape(3, 5)  # Reshape the array into 3 rows of 5 components each
+    
+    # Pad array with zeros to make length multiple of 5
+    pad_length = (5 - (arr.size % 5)) % 5
+    padded_arr = jnp.pad(arr, (0, pad_length))
+    
+    # Reshape into array with 5 columns
+    num_rows = padded_arr.size // 5
+    reshaped_arr = padded_arr.reshape(num_rows, 5)
+    
     plt.figure(figsize=(15, 3))  # Adjust the figure size to accommodate the reshaped array
     plt.axis("off")
     vmax = jnp.maximum(jnp.abs(jnp.min(reshaped_arr)), jnp.max(reshaped_arr))  # Compute vmax using the reshaped array
