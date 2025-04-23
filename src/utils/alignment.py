@@ -72,6 +72,82 @@ def sample_multiple_quaternions(key, num_samples):
 
 
 @jax.jit
+def quaternion_rotation_distance(q1, q2):
+    """
+    Calculate the rotation distance between two quaternions.
+    
+    Args:
+        q1: First quaternion in format [w, x, y, z]
+        q2: Second quaternion in format [w, x, y, z]
+    
+    Returns:
+        float: Rotation distance between the two quaternions
+    """
+    dot = jnp.dot(q1, q2)
+    dot = jnp.clip(jnp.abs(dot), -1.0, 1.0)
+    return 2 * jnp.arccos(dot)
+
+
+def evenly_distributed_quaternions(n):
+    """
+    Generate n evenly distributed quaternions representing unique rotations in SO(3).
+    
+    This implementation uses a Fibonacci lattice on the 4D hypersphere and
+    ensures all quaternions represent unique rotations (accounting for the fact 
+    that q and -q represent the same rotation).
+    
+    Parameters:
+    -----------
+    n : int
+        Number of quaternions to generate
+        
+    Returns:
+    --------
+    quaternions : jax.numpy.ndarray
+        Array of shape (n, 4) containing n unit quaternions in format [w, x, y, z]
+    """
+    # Generate points using multiple irrational numbers for better distribution
+    indices = jnp.arange(0, n, dtype=float) + 0.5
+    
+    # Use different irrational numbers to create optimal spreading
+    phi1 = (1 + jnp.sqrt(5)) / 2  # Golden ratio ≈ 1.618
+    phi2 = (1 + jnp.sqrt(2))      # Silver ratio ≈ 2.414
+    phi3 = jnp.pi                 # π ≈ 3.142
+    
+    # Generate angles using these irrational number factors
+    angle1 = 2 * jnp.pi * (indices / phi1 % 1)
+    angle2 = 2 * jnp.pi * (indices / phi2 % 1)
+    angle3 = 2 * jnp.pi * (indices / phi3 % 1)
+    
+    # Convert directly to 4D coordinates (hyperspherical coordinates)
+    cos_angle1, sin_angle1 = jnp.cos(angle1), jnp.sin(angle1)
+    cos_angle2, sin_angle2 = jnp.cos(angle2), jnp.sin(angle2)
+    cos_angle3, sin_angle3 = jnp.cos(angle3), jnp.sin(angle3)
+    
+    # Compute quaternion components
+    w = cos_angle1
+    x = sin_angle1 * cos_angle2
+    y = sin_angle1 * sin_angle2 * cos_angle3
+    z = sin_angle1 * sin_angle2 * sin_angle3
+    
+    # Combine into quaternions [w, x, y, z]
+    quaternions = jnp.column_stack((w, x, y, z))
+    
+    # Ensure quaternions have w ≥ 0 to eliminate duplicate rotations
+    # (since q and -q represent the same rotation)
+    quaternions = jnp.where(
+        jnp.repeat(quaternions[:, 0:1] < 0, 4, axis=1),
+        -quaternions,
+        quaternions
+    )
+    
+    # Normalize (protects against floating-point errors)
+    quaternions = quaternions / jnp.linalg.norm(quaternions, axis=1, keepdims=True)
+    
+    return quaternions
+
+
+@jax.jit
 def normalize_quaternion(q):
     """Normalize a quaternion to unit length.
     
@@ -143,6 +219,7 @@ def loss_fn(quaternion, signal1, signal2):
     """
     rotated_signal1 = signal1.transform_by_quaternion(quaternion)
     return spherical_grid_distance(rotated_signal1, signal2)
+    # return spherical_harmonic_distance(rotated_signal1, signal2)
 
 
 def find_best_random_quaternion(key, signal1, signal2, num_samples=100):
@@ -158,6 +235,12 @@ def find_best_random_quaternion(key, signal1, signal2, num_samples=100):
         jnp.ndarray: Best quaternion found from the random samples
     """
     quaternions = sample_multiple_quaternions(key, num_samples)
+    return quaternions[jnp.argmin(jnp.array([loss_fn(q, signal1, signal2) for q in quaternions]))]
+
+
+def choose_best_quaternion(signal1, signal2, quaternions=None, num_quaternions=100):
+    if quaternions is None:
+        quaternions = evenly_distributed_quaternions(num_quaternions)
     return quaternions[jnp.argmin(jnp.array([loss_fn(q, signal1, signal2) for q in quaternions]))]
 
 
@@ -389,9 +472,48 @@ def rotate_points_quaternion(q, points):
     return rotated_points
 
 
+# def stack_points(points):
+#     """
+#     Stack points centered about the origin that lie along the same radial line. 
+#     This is used to recover the original geometry from interverting spectra.
+
+#     Args:
+#         points: Array of points with shape (N, 3) where N is the number of points
+#             and each point is [x, y, z]
+    
+#     Returns:
+#         jax.numpy.ndarray: Array of stacked points with shape (M, 3) where M is the number of stacked points
+#     """
+#     points_norms = jnp.linalg.norm(points, axis=1, keepdims=True)
+#     normalized_points = points / points_norms
+
+#     point_stacked_indices = []
+#     indices_left = set(range(len(points)))
+#     while len(indices_left):
+#         point = normalized_points[next(iter(indices_left))]
+#         stacked_indices = jnp.where(jnp.dot(normalized_points, point) > 0.866)[0]
+#         point_stacked_indices.append(stacked_indices)
+#         indices_left = indices_left - set(stacked_indices.tolist())
+
+#     original_points = []
+#     for stacked_indices in point_stacked_indices:
+#         normalized_point = normalized_points[stacked_indices[0]]
+#         norm = points_norms[stacked_indices].sum()
+#         original_points.append(normalized_point * norm)
+
+#     # Filter out noisy points with norm < 1
+#     filtered_points = []
+#     for point in original_points:
+#         if jnp.linalg.norm(point) >= 0.75:
+#             filtered_points.append(point)
+
+#     return jnp.array(filtered_points)
+
+
+
 def stack_points(points):
     """
-    Stack points centered about the origin that lie along the same radial line. 
+    Vectorially stack points centered about the origin that lie along the same radial line. 
     This is used to recover the original geometry from interverting spectra.
 
     Args:
@@ -414,17 +536,19 @@ def stack_points(points):
 
     original_points = []
     for stacked_indices in point_stacked_indices:
-        normalized_point = normalized_points[stacked_indices[0]]
-        norm = points_norms[stacked_indices].sum()
-        original_points.append(normalized_point * norm)
+        original_points.append(jnp.sum(points[stacked_indices], axis=0))
 
     # Filter out noisy points with norm < 1
     filtered_points = []
+    max_point_norm = jnp.max(points_norms)
     for point in original_points:
-        if jnp.linalg.norm(point) >= 0.75:
+        if jnp.linalg.norm(point) >= 0.5 * max_point_norm:
             filtered_points.append(point)
 
     return jnp.array(filtered_points)
+
+
+
 
 def point_distance(points1: jnp.ndarray, points2: jnp.ndarray) -> float:
     """Calculate the sum of minimum distances from each point in points1 to points2.
@@ -458,3 +582,5 @@ def point_distance(points1: jnp.ndarray, points2: jnp.ndarray) -> float:
     
     # Return sum and max of all minimum distances
     return jnp.sum(min_distances), jnp.max(min_distances)
+
+
