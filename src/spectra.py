@@ -523,7 +523,7 @@ class Spectra:
 
 
 def invert(true_spectrum, spectrum_function, lmax, mask_index=None, initial_points=None, n_points=20, learning_rate=1e-2, 
-                     seed=0, num_iterations=10000):
+                     seed=0, num_iterations=100000):
     """
     Inverts either the power spectrum or bispectrum to a signal with adaptive learning rate.
     Returns the final signal and history of points saved every 100 iterations.
@@ -539,9 +539,10 @@ def invert(true_spectrum, spectrum_function, lmax, mask_index=None, initial_poin
         num_iterations: Maximum number of iterations
         
     Returns:
-        tuple: (best_points, points_history)
+        tuple: (best_points, points_history, losses_history)
             - best_points: Points that achieved the lowest loss
             - points_history: Dictionary with iteration numbers as keys and points at those iterations as values
+            - losses_history: Dictionary with iteration numbers as keys and loss values at those iterations
     """
     def loss(
         params: optax.Params, true_spectrum: chex.Array
@@ -579,17 +580,18 @@ def invert(true_spectrum, spectrum_function, lmax, mask_index=None, initial_poin
         opt_state = optimizer.init(params)
         
         # Initialize tracking variables
-        patience = 100  # Stop if no improvement after this many iterations
+        patience = 5000  # Stop if no improvement after this many iterations
         
         # Track optimization progress
         min_loss = float('inf')
         no_improvement_count = 0
         
         # Save best parameters
-        best_params = jax.tree_map(lambda x: x.copy(), params)
+        best_params = jax.tree_util.tree_map(lambda x: x.copy(), params)
         
         # Initialize points history dictionary
         points_history = {}
+        losses_history = {}
         
         # Pure function to update parameters - JIT compatible
         @jax.jit
@@ -607,10 +609,11 @@ def invert(true_spectrum, spectrum_function, lmax, mask_index=None, initial_poin
                 params, opt_state, true_spectrum, iter
             )
             
-            # Save points every 100 iterations
-            if iter % 100 == 0:
+            # Save points every iterations
+            if iter % 10 == 0:
                 # We need to convert JAX arrays to numpy arrays for the history
                 points_history[iter] = jax.device_get(params["points"])
+                losses_history[iter] = jax.device_get(loss_value)
                 # print(f"step {iter}, loss: {loss_value}")
             
             # Check if loss decreased
@@ -618,7 +621,7 @@ def invert(true_spectrum, spectrum_function, lmax, mask_index=None, initial_poin
                 min_loss = loss_value
                 no_improvement_count = 0
                 # Save the best parameters
-                best_params = jax.tree_map(lambda x: x.copy(), params)
+                best_params = jax.tree_util.tree_map(lambda x: x.copy(), params)
             else:
                 no_improvement_count += 1
                 
@@ -628,11 +631,12 @@ def invert(true_spectrum, spectrum_function, lmax, mask_index=None, initial_poin
                 # Save the final points before breaking
                 if iter % 100 != 0:  # Only if we haven't just saved them
                     points_history[iter] = jax.device_get(params["points"])
+                    losses_history[iter] = jax.device_get(loss_value)
                 break
 
         # Return the best parameters found during optimization
-        print(f"Final best loss: {min_loss}")
-        return best_params, points_history
+        # print(f"Final best loss: {min_loss}")
+        return best_params, points_history, losses_history
     
     if initial_points is None and n_points is None:
         rng = jax.random.PRNGKey(seed)
@@ -643,11 +647,10 @@ def invert(true_spectrum, spectrum_function, lmax, mask_index=None, initial_poin
     init_params = {"points": initial_points}
     
     # Create optimizer with fixed learning rate
-    final_params, points_history = fit(init_params, learning_rate, true_spectrum)
+    final_params, points_history, losses_history = fit(init_params, learning_rate, true_spectrum)
     
     # Return both the best points and the history of points
-    return final_params["points"]#, points_history
-
+    return final_params["points"], points_history, losses_history
 
 
 def invert_stack_invert(true_spectrum, spectrum_function, lmax, seed=0, initial_points=None,  n_points=20, mask_index=None):
@@ -677,3 +680,6 @@ def reconstruct_geometry(true_spectrum, spectrum_function, lmax, original_geomet
     predicted_points = invert_stack_invert(true_spectrum, spectrum_function, lmax, seed=seed, mask_index=mask_index, n_points=n_points, initial_points=initial_points)
     rotated_points = align_points(predicted_points, original_geometry, lmax)
     return rotated_points
+
+
+

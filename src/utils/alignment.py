@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 import e3nn_jax as e3nn
 import optax
-
+from tqdm import tqdm
 
 @jax.jit
 def sample_uniform_quaternion(key):
@@ -91,59 +91,51 @@ def quaternion_rotation_distance(q1, q2):
 def evenly_distributed_quaternions(n):
     """
     Generate n evenly distributed quaternions representing unique rotations in SO(3).
-    
-    This implementation uses a Fibonacci lattice on the 4D hypersphere and
-    ensures all quaternions represent unique rotations (accounting for the fact 
-    that q and -q represent the same rotation).
-    
+
+    This implementation uses a deterministic method to generate evenly distributed
+    points on S³ (the unit quaternion space), while ensuring that each rotation
+    is represented exactly once (accounting for the q/-q equivalence).
+
     Parameters:
     -----------
     n : int
         Number of quaternions to generate
-        
+
     Returns:
     --------
     quaternions : jax.numpy.ndarray
         Array of shape (n, 4) containing n unit quaternions in format [w, x, y, z]
     """
-    # Generate points using multiple irrational numbers for better distribution
-    indices = jnp.arange(0, n, dtype=float) + 0.5
-    
-    # Use different irrational numbers to create optimal spreading
-    phi1 = (1 + jnp.sqrt(5)) / 2  # Golden ratio ≈ 1.618
-    phi2 = (1 + jnp.sqrt(2))      # Silver ratio ≈ 2.414
-    phi3 = jnp.pi                 # π ≈ 3.142
-    
-    # Generate angles using these irrational number factors
-    angle1 = 2 * jnp.pi * (indices / phi1 % 1)
-    angle2 = 2 * jnp.pi * (indices / phi2 % 1)
-    angle3 = 2 * jnp.pi * (indices / phi3 % 1)
-    
-    # Convert directly to 4D coordinates (hyperspherical coordinates)
-    cos_angle1, sin_angle1 = jnp.cos(angle1), jnp.sin(angle1)
-    cos_angle2, sin_angle2 = jnp.cos(angle2), jnp.sin(angle2)
-    cos_angle3, sin_angle3 = jnp.cos(angle3), jnp.sin(angle3)
-    
-    # Compute quaternion components
-    w = cos_angle1
-    x = sin_angle1 * cos_angle2
-    y = sin_angle1 * sin_angle2 * cos_angle3
-    z = sin_angle1 * sin_angle2 * sin_angle3
-    
+    # Generate points from 0 to 1 (exclusive)
+    # Adding 0.5 and dividing by n gives better distribution
+    points = (jnp.arange(n) + 0.5) / n
+
+    # Golden ratio for spiral points
+    phi = (1 + jnp.sqrt(5)) / 2
+
+    # For uniform distribution on S³, the first angle needs
+    # to be arccos(sqrt(1-u)) where u is uniform on [0,1]
+    # This accounts for the proper measure on the 3-sphere
+    theta = jnp.arccos(jnp.sqrt(1.0 - points))
+
+    # Use Fibonacci sequence for the other two angles
+    phi1 = 2 * jnp.pi * (points / phi % 1.0)
+    phi2 = 2 * jnp.pi * (points / (phi*phi) % 1.0)
+
+    # Convert spherical coordinates to quaternion components
+    w = jnp.cos(theta)  # w ≥ 0 by construction
+    sin_theta = jnp.sin(theta)
+
+    x = sin_theta * jnp.cos(phi1)
+    y = sin_theta * jnp.sin(phi1) * jnp.cos(phi2)
+    z = sin_theta * jnp.sin(phi1) * jnp.sin(phi2)
+
     # Combine into quaternions [w, x, y, z]
     quaternions = jnp.column_stack((w, x, y, z))
-    
-    # Ensure quaternions have w ≥ 0 to eliminate duplicate rotations
-    # (since q and -q represent the same rotation)
-    quaternions = jnp.where(
-        jnp.repeat(quaternions[:, 0:1] < 0, 4, axis=1),
-        -quaternions,
-        quaternions
-    )
-    
-    # Normalize (protects against floating-point errors)
+
+    # Normalize (ensures unit quaternions despite floating-point errors)
     quaternions = quaternions / jnp.linalg.norm(quaternions, axis=1, keepdims=True)
-    
+
     return quaternions
 
 
@@ -218,8 +210,8 @@ def loss_fn(quaternion, signal1, signal2):
         float: Distance between the rotated signal1 and signal2
     """
     rotated_signal1 = signal1.transform_by_quaternion(quaternion)
-    return spherical_grid_distance(rotated_signal1, signal2)
-    # return spherical_harmonic_distance(rotated_signal1, signal2)
+    # return spherical_grid_distance(rotated_signal1, signal2)
+    return spherical_harmonic_distance(rotated_signal1, signal2)
 
 
 def find_best_random_quaternion(key, signal1, signal2, num_samples=100):
@@ -358,13 +350,87 @@ def choose_best_quaternion(signal1, signal2, quaternions=None, num_quaternions=1
 #     return best_quaternion, best_loss
 
 
+# def align_signals(
+#     signal1, 
+#     signal2, 
+#     initial_quaternion,
+#     learning_rate=1e-2,
+#     num_iterations=250,
+#     patience=100,
+# ):
+#     """Find optimal rotation to align two spherical signals using gradient descent.
+    
+#     Uses Adam optimizer to find the quaternion rotation that best aligns signal1
+#     with signal2 by minimizing their spherical distance.
+    
+#     Args:
+#         signal1: First spherical signal to be rotated
+#         signal2: Second spherical signal (target)
+#         initial_quaternion: Starting quaternion for optimization
+#         learning_rate: Learning rate for Adam optimizer
+#         num_iterations: Number of optimization iterations
+#         patience: Number of iterations to wait before early stopping if no improvement
+        
+#     Returns:
+#         jnp.ndarray: Optimized quaternion that best aligns the signals
+#         float: Final loss value
+#         list: List of quaternions at each iteration
+#     """
+#     # Create optimizer
+#     optimizer = optax.adam(learning_rate)
+    
+#     @jax.jit
+#     def update_step(params, opt_state, signal1, signal2):
+#         grads = jax.grad(loss_fn)(params, signal1, signal2)
+#         updates, opt_state = optimizer.update(grads, opt_state)
+#         params = optax.apply_updates(params, updates)
+#         params = normalize_quaternion(params)
+#         return params, opt_state, loss_fn(params, signal1, signal2)
+
+#     # Initialize optimization
+#     current_quaternion = initial_quaternion
+#     opt_state = optimizer.init(current_quaternion)
+    
+#     # Initialize variables for early stopping
+#     best_loss = loss_fn(current_quaternion, signal1, signal2)
+#     best_quaternion = current_quaternion
+#     patience_counter = 0
+    
+#     # Track quaternions at each iteration
+#     quaternion_history = [initial_quaternion.copy()]
+    
+#     # Run optimization
+#     for i in range(num_iterations):
+#         current_quaternion, opt_state, current_loss = update_step(
+#             current_quaternion, opt_state, signal1, signal2
+#         )
+        
+#         # Store current quaternion
+#         quaternion_history.append(current_quaternion.copy())
+        
+#         # Check if loss improved
+#         if current_loss < best_loss:
+#             best_loss = current_loss
+#             best_quaternion = current_quaternion
+#             patience_counter = 0
+#         else:
+#             patience_counter += 1
+            
+#         # Early stopping check
+#         if patience_counter >= patience:
+#             print(f"Early stopping at iteration {i} due to no improvement for {patience} iterations")
+#             break
+            
+#     return best_quaternion, best_loss, quaternion_history
+
+
+@jax.jit  # Optimization 1: JIT the entire function
 def align_signals(
     signal1, 
     signal2, 
     initial_quaternion,
-    learning_rate=1e-2,
-    num_iterations=250,
-    patience=100,
+    learning_rate=1e-3,
+    num_iterations=200,
 ):
     """Find optimal rotation to align two spherical signals using gradient descent.
     
@@ -377,60 +443,35 @@ def align_signals(
         initial_quaternion: Starting quaternion for optimization
         learning_rate: Learning rate for Adam optimizer
         num_iterations: Number of optimization iterations
-        patience: Number of iterations to wait before early stopping if no improvement
         
     Returns:
         jnp.ndarray: Optimized quaternion that best aligns the signals
-        float: Final loss value
-        list: List of quaternions at each iteration
     """
-    # Create optimizer
     optimizer = optax.adam(learning_rate)
     
-    @jax.jit
     def update_step(params, opt_state, signal1, signal2):
         grads = jax.grad(loss_fn)(params, signal1, signal2)
         updates, opt_state = optimizer.update(grads, opt_state)
         params = optax.apply_updates(params, updates)
         params = normalize_quaternion(params)
-        return params, opt_state, loss_fn(params, signal1, signal2)
+        return params, opt_state
 
-    # Initialize optimization
     current_quaternion = initial_quaternion
     opt_state = optimizer.init(current_quaternion)
     
-    # Initialize variables for early stopping
-    best_loss = float('inf')
-    best_quaternion = current_quaternion
-    patience_counter = 0
+    def scan_body(carry, _):
+        params, opt_state = carry
+        params, opt_state = update_step(params, opt_state, signal1, signal2)
+        return (params, opt_state), None
     
-    # Track quaternions at each iteration
-    quaternion_history = [initial_quaternion.copy()]
-    
-    # Run optimization
-    for i in range(num_iterations):
-        current_quaternion, opt_state, current_loss = update_step(
-            current_quaternion, opt_state, signal1, signal2
-        )
-        
-        # Store current quaternion
-        quaternion_history.append(current_quaternion.copy())
-        
-        # Check if loss improved
-        if current_loss < best_loss:
-            best_loss = current_loss
-            best_quaternion = current_quaternion
-            patience_counter = 0
-        else:
-            patience_counter += 1
+    (current_quaternion, opt_state), _ = jax.lax.scan(
+        scan_body,
+        (current_quaternion, opt_state),
+        None,
+        length=num_iterations
+    )
             
-        # Early stopping check
-        if patience_counter >= patience:
-            print(f"Early stopping at iteration {i} due to no improvement for {patience} iterations")
-            break
-            
-    return best_quaternion, best_loss, quaternion_history
-
+    return current_quaternion
 
 
 def rotate_points_quaternion(q, points):
